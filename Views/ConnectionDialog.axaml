@@ -46,19 +46,20 @@
         <TextBlock Text="Database:" FontWeight="Bold" Margin="0,8,0,0"/>
         <ComboBox ItemsSource="{Binding Databases}" SelectedItem="{Binding SelectedDatabase}" HorizontalAlignment="Stretch" PlaceholderText="Select a database..." />
 
-        <!-- Time Window -->
+        <!-- Time Window (Optional) -->
         <TextBlock Text="Time Window (Optional):" FontWeight="Bold" Margin="0,8,0,0"/>
-        <Grid ColumnDefinitions="Auto,*">
-            <TextBlock Grid.Column="0" Text="Start:" VerticalAlignment="Center" Margin="0,0,8,0"/>
-            <CalendarDatePicker Grid.Column="1" SelectedDate="{Binding StartTime}" HorizontalAlignment="Stretch" />
-        </Grid>
-        <Grid ColumnDefinitions="Auto,*">
-            <TextBlock Grid.Column="0" Text="End:" VerticalAlignment="Center" Margin="0,0,8,0"/>
-            <CalendarDatePicker Grid.Column="1" SelectedDate="{Binding EndTime}" HorizontalAlignment="Stretch" />
+        <Grid ColumnDefinitions="Auto,*,Auto,*" RowDefinitions="Auto,Auto">
+            <TextBlock Grid.Row="0" Grid.Column="0" Text="Start:" VerticalAlignment="Center" Margin="0,0,8,8"/>
+            <CalendarDatePicker Grid.Row="0" Grid.Column="1" SelectedDate="{Binding StartTime}" HorizontalAlignment="Stretch" Margin="0,0,8,8" />
+            <TimePicker Grid.Row="0" Grid.Column="2" SelectedTime="{Binding StartTimeOfDay}" Margin="0,0,0,8" />
+
+            <TextBlock Grid.Row="1" Grid.Column="0" Text="End:" VerticalAlignment="Center" Margin="0,0,8,0"/>
+            <CalendarDatePicker Grid.Row="1" Grid.Column="1" SelectedDate="{Binding EndTime}" HorizontalAlignment="Stretch" Margin="0,0,8,0" />
+            <TimePicker Grid.Row="1" Grid.Column="2" SelectedTime="{Binding EndTimeOfDay}" />
         </Grid>
 
         <!-- Status -->
-        <TextBlock Text="{Binding StatusMessage}" Foreground="Red" TextWrapping="Wrap" MinHeight="40" Margin="0,8,0,0" />
+        <TextBlock Text="{Binding StatusMessage}" TextWrapping="Wrap" MinHeight="40" Margin="0,8,0,0" />
 
         <!-- Dialog Buttons -->
         <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8" Margin="0,16,0,0">

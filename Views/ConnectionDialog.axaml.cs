@@ -15,9 +15,14 @@ public partial class ConnectionDialog : Window
 
     private async void OnOkClick(object? sender, RoutedEventArgs e)
     {
-        if (DataContext is ConnectionDialogViewModel vm)
+        if (sender is Button btn)
         {
-            try
+            btn.IsEnabled = false;
+        }
+        
+        try
+        {
+            if (DataContext is ConnectionDialogViewModel vm)
             {
                 vm.StatusMessage = "Connecting to resolve LSN range...";
                 
@@ -27,9 +32,19 @@ public partial class ConnectionDialog : Window
                 // Close and return the connection string and LsnRange
                 Close((ConnectionString: vm.BuildConnectionString(), Range: range));
             }
-            catch (Exception ex)
+        }
+        catch (Exception ex)
+        {
+            if (DataContext is ConnectionDialogViewModel vm)
             {
                 vm.StatusMessage = $"Failed to resolve LSN range: {ex.Message}";
+            }
+        }
+        finally
+        {
+            if (sender is Button btn)
+            {
+                btn.IsEnabled = true;
             }
         }
     }
