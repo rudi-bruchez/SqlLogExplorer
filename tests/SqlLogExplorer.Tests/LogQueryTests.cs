@@ -43,4 +43,31 @@ public class LogQueryTests
         Assert.Equal(3, page.Count);
         Assert.All(page, r => Assert.Equal("LOP_DELETE_ROWS", r.Operation));
     }
+
+    [Fact]
+    public async Task CountByOperationAsync_GroupsAndOrdersDescending()
+    {
+        await using var cache = await SeedAsync();
+        var query = new LogQuery(cache.Connection);
+
+        var result = await query.CountByOperationAsync();
+
+        Assert.Equal(2, result.Count);
+        Assert.Equal("LOP_INSERT_ROWS", result[0].Operation);
+        Assert.Equal(5, result[0].Count);
+        Assert.Equal("LOP_DELETE_ROWS", result[1].Operation);
+        Assert.Equal(3, result[1].Count);
+    }
+
+    [Fact]
+    public async Task CountByOperationAsync_HonorsFilter()
+    {
+        await using var cache = await SeedAsync();
+        var query = new LogQuery(cache.Connection);
+
+        var result = await query.CountByOperationAsync(new LogFilter(AllocUnitName: "Orders"));
+
+        Assert.Single(result);
+        Assert.Equal("LOP_DELETE_ROWS", result[0].Operation);
+    }
 }

@@ -40,6 +40,21 @@ public sealed class LogQuery
         return list;
     }
 
+    public async Task<IReadOnlyList<OperationCount>> CountByOperationAsync(
+        LogFilter? filter = null, CancellationToken ct = default)
+    {
+        await using var cmd = _connection.CreateCommand();
+        var where = AppendFilter(cmd, filter);
+        cmd.CommandText =
+            $"SELECT Operation, COUNT(*) AS Nb FROM LogRecords{where} GROUP BY Operation ORDER BY Nb DESC;";
+
+        var list = new List<OperationCount>();
+        await using var reader = await cmd.ExecuteReaderAsync(ct);
+        while (await reader.ReadAsync(ct))
+            list.Add(new OperationCount(reader.GetString(0), reader.GetInt64(1)));
+        return list;
+    }
+
     /// <summary>Ajoute les paramètres de filtre à <paramref name="cmd"/> et renvoie la clause WHERE (préfixée d'un espace) ou "".</summary>
     internal static string AppendFilter(SqliteCommand cmd, LogFilter? filter)
     {
