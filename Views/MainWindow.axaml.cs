@@ -3,6 +3,7 @@ using System.Linq;
 using Avalonia.Controls;
 using Avalonia.Interactivity;
 using Avalonia.Platform.Storage;
+using SqlLogExplorer.Models;
 using SqlLogExplorer.ViewModels;
 
 namespace SqlLogExplorer.Views;
@@ -36,11 +37,14 @@ public partial class MainWindow : Window
         }
     }
 
-    // MVP intermédiaire : chaîne de connexion brute. Remplacé par ConnectionDialog en Task 18.
-    private async void OnAnalyzeLive(object? sender, RoutedEventArgs e)
+    private async void OnConnectLive(object? sender, RoutedEventArgs e)
     {
-        if (DataContext is MainWindowViewModel vm)
-            await vm.LoadLiveAsync(LiveDbConnectionString.Text ?? string.Empty);
+        if (DataContext is not MainWindowViewModel vm) return;
+
+        var dialog = new Views.ConnectionDialog { DataContext = new ConnectionDialogViewModel() };
+        var result = await dialog.ShowDialog<(string ConnectionString, LsnRange? Range)?>(this);
+        if (result is { } r && !string.IsNullOrWhiteSpace(r.ConnectionString))
+            await vm.LoadLiveAsync(r.ConnectionString, r.Range);
     }
 
     // Libère le cache SQLite (connexion + fichier temporaire) à la fermeture de la fenêtre.
