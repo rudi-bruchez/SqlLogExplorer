@@ -1,6 +1,0 @@
-<Solution>
-  <Folder Name="/tests/">
-    <Project Path="tests/SqlLogExplorer.Tests/SqlLogExplorer.Tests.csproj" />
-  </Folder>
-  <Project Path="SqlLogExplorer.csproj" />
-</Solution>
