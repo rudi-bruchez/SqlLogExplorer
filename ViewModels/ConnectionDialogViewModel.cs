@@ -34,6 +34,7 @@ public partial class ConnectionDialogViewModel : ViewModelBase
     [ObservableProperty] private string? _statusMessage;
 
     public ObservableCollection<string> Databases { get; } = new();
+    public ObservableCollection<string> RecentServers { get; } = new();
 
     public SqlAuthMode[] AuthModes { get; } = new[] { SqlAuthMode.Windows, SqlAuthMode.SqlLogin };
     public EncryptMode[] EncryptModes { get; } = new[] { EncryptMode.Optional, EncryptMode.Mandatory };
@@ -81,6 +82,9 @@ public partial class ConnectionDialogViewModel : ViewModelBase
     /// <summary>Résout la fenêtre temporelle en plage LSN (null = log actif complet).</summary>
     public async Task<LsnRange?> ResolveRangeAsync()
     {
+        if (string.IsNullOrWhiteSpace(SelectedDatabase))
+            throw new InvalidOperationException("Please select a database first.");
+
         var resolvedStart = GetResolvedStartTime();
         var resolvedEnd = GetResolvedEndTime();
         if (resolvedStart is null && resolvedEnd is null) return null;
