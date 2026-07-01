@@ -32,4 +32,23 @@ public class LogCacheTests
         }
         Assert.False(File.Exists(path));
     }
+
+    [Fact]
+    public async Task InsertBatchAsync_PersistsRowsWithNullsAndBlobs()
+    {
+        await using var cache = await LogCache.CreateAsync(TempDb());
+        var records = new List<Models.LogRecord>
+        {
+            new("00000021:000000b4:0002", "LOP_INSERT_ROWS", "LCX_HEAP", "0000:0000abcd", "dbo.Clients",
+                new byte[] { 0x10, 0x00 }, null),
+            new("00000021:000000b4:0003", "LOP_DELETE_ROWS", null, null, null, null, null),
+        };
+
+        var inserted = await cache.InsertBatchAsync(records);
+
+        Assert.Equal(2, inserted);
+        await using var cmd = cache.Connection.CreateCommand();
+        cmd.CommandText = "SELECT COUNT(*) FROM LogRecords WHERE AllocUnitName IS NULL;";
+        Assert.Equal(1L, (long)(await cmd.ExecuteScalarAsync())!);
+    }
 }
