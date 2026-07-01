@@ -16,56 +16,69 @@
         <vm:ConnectionDialogViewModel />
     </Design.DataContext>
 
-    <StackPanel Margin="16" Spacing="12">
-        <!-- Connection Settings -->
-        <TextBlock Text="Server:" FontWeight="Bold"/>
-        <TextBox Text="{Binding Server}" PlaceholderText="Server name or IP address" />
+    <TabControl>
+        <TabItem Header="Connection">
+            <StackPanel Margin="16" Spacing="12">
+                <!-- Connection Settings -->
+                <TextBlock Text="Server:" FontWeight="Bold"/>
+                <TextBox Text="{Binding Server}" PlaceholderText="Server name or IP address" />
 
-        <TextBlock Text="Authentication:" FontWeight="Bold"/>
-        <ComboBox ItemsSource="{Binding AuthModes}" SelectedItem="{Binding Auth}" HorizontalAlignment="Stretch" />
+                <TextBlock Text="Authentication:" FontWeight="Bold"/>
+                <ComboBox ItemsSource="{Binding AuthModes}" SelectedItem="{Binding Auth}" HorizontalAlignment="Stretch" />
 
-        <!-- Credentials (visible only if SqlLogin) -->
-        <StackPanel Spacing="12" IsVisible="{Binding IsSqlLoginVisible}">
-            <TextBlock Text="User name:" />
-            <TextBox Text="{Binding UserName}" />
+                <!-- Credentials (visible only if SqlLogin) -->
+                <StackPanel Spacing="12" IsVisible="{Binding IsSqlLoginVisible}">
+                    <TextBlock Text="User name:" />
+                    <TextBox Text="{Binding UserName}" />
 
-            <TextBlock Text="Password:" />
-            <TextBox Text="{Binding Password}" PasswordChar="●" />
-        </StackPanel>
+                    <TextBlock Text="Password:" />
+                    <TextBox Text="{Binding Password}" PasswordChar="●" />
+                </StackPanel>
 
-        <!-- Encryption -->
-        <TextBlock Text="Encryption:" FontWeight="Bold" Margin="0,8,0,0"/>
-        <ComboBox ItemsSource="{Binding EncryptModes}" SelectedItem="{Binding Encrypt}" HorizontalAlignment="Stretch" />
-        
-        <CheckBox Content="Trust server certificate" IsChecked="{Binding TrustServerCertificate}" />
+                <!-- Encryption -->
+                <TextBlock Text="Encryption:" FontWeight="Bold" Margin="0,8,0,0"/>
+                <ComboBox ItemsSource="{Binding EncryptModes}" SelectedItem="{Binding Encrypt}" HorizontalAlignment="Stretch" />
+                
+                <CheckBox Content="Trust server certificate" IsChecked="{Binding TrustServerCertificate}" />
 
-        <!-- Connect to get databases -->
-        <Button Content="Connect" Command="{Binding ListDatabasesCommand}" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" Margin="0,8,0,0"/>
+                <!-- Connect to get databases -->
+                <Button Content="Connect" Command="{Binding ListDatabasesCommand}" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" Margin="0,8,0,0"/>
 
-        <!-- Database Selection -->
-        <TextBlock Text="Database:" FontWeight="Bold" Margin="0,8,0,0"/>
-        <ComboBox ItemsSource="{Binding Databases}" SelectedItem="{Binding SelectedDatabase}" HorizontalAlignment="Stretch" PlaceholderText="Select a database..." />
+                <!-- Database Selection -->
+                <TextBlock Text="Database:" FontWeight="Bold" Margin="0,8,0,0"/>
+                <ComboBox ItemsSource="{Binding Databases}" SelectedItem="{Binding SelectedDatabase}" HorizontalAlignment="Stretch" PlaceholderText="Select a database..." />
 
-        <!-- Time Window (Optional) -->
-        <TextBlock Text="Time Window (Optional):" FontWeight="Bold" Margin="0,8,0,0"/>
-        <Grid ColumnDefinitions="Auto,*,Auto,*" RowDefinitions="Auto,Auto">
-            <TextBlock Grid.Row="0" Grid.Column="0" Text="Start:" VerticalAlignment="Center" Margin="0,0,8,8"/>
-            <CalendarDatePicker Grid.Row="0" Grid.Column="1" SelectedDate="{Binding StartTime}" HorizontalAlignment="Stretch" Margin="0,0,8,8" />
-            <TimePicker Grid.Row="0" Grid.Column="2" SelectedTime="{Binding StartTimeOfDay}" Margin="0,0,0,8" />
+                <!-- Time Window (Optional) -->
+                <TextBlock Text="Time Window (Optional):" FontWeight="Bold" Margin="0,8,0,0"/>
+                <Grid ColumnDefinitions="Auto,*,Auto" RowDefinitions="Auto,Auto">
+                    <TextBlock Grid.Row="0" Grid.Column="0" Text="Start:" VerticalAlignment="Center" Margin="0,0,8,8"/>
+                    <CalendarDatePicker Grid.Row="0" Grid.Column="1" SelectedDate="{Binding StartTime}" HorizontalAlignment="Stretch" Margin="0,0,8,8" />
+                    <TimePicker Grid.Row="0" Grid.Column="2" SelectedTime="{Binding StartTimeOfDay}" Margin="0,0,0,8" />
 
-            <TextBlock Grid.Row="1" Grid.Column="0" Text="End:" VerticalAlignment="Center" Margin="0,0,8,0"/>
-            <CalendarDatePicker Grid.Row="1" Grid.Column="1" SelectedDate="{Binding EndTime}" HorizontalAlignment="Stretch" Margin="0,0,8,0" />
-            <TimePicker Grid.Row="1" Grid.Column="2" SelectedTime="{Binding EndTimeOfDay}" />
-        </Grid>
+                    <TextBlock Grid.Row="1" Grid.Column="0" Text="End:" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                    <CalendarDatePicker Grid.Row="1" Grid.Column="1" SelectedDate="{Binding EndTime}" HorizontalAlignment="Stretch" Margin="0,0,8,0" />
+                    <TimePicker Grid.Row="1" Grid.Column="2" SelectedTime="{Binding EndTimeOfDay}" />
+                </Grid>
 
-        <!-- Status -->
-        <TextBlock Text="{Binding StatusMessage}" TextWrapping="Wrap" MinHeight="40" Margin="0,8,0,0" />
+                <!-- Status -->
+                <TextBlock Text="{Binding StatusMessage}" TextWrapping="Wrap" MinHeight="40" Margin="0,8,0,0" />
 
-        <!-- Dialog Buttons -->
-        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8" Margin="0,16,0,0">
-            <Button Content="OK" Click="OnOkClick" IsDefault="True" Width="80" HorizontalContentAlignment="Center"/>
-            <Button Content="Cancel" Click="OnCancelClick" IsCancel="True" Width="80" HorizontalContentAlignment="Center"/>
-        </StackPanel>
-
-    </StackPanel>
+                <!-- Dialog Buttons -->
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8" Margin="0,16,0,0">
+                    <Button Content="OK" Click="OnOkClick" IsDefault="True" Width="80" HorizontalContentAlignment="Center"/>
+                    <Button Content="Cancel" Click="OnCancelClick" IsCancel="True" Width="80" HorizontalContentAlignment="Center"/>
+                </StackPanel>
+            </StackPanel>
+        </TabItem>
+        <TabItem Header="History">
+            <StackPanel Margin="16" Spacing="12">
+                <TextBlock Text="Recent servers:" FontWeight="Bold"/>
+                <ListBox ItemsSource="{Binding RecentServers}" MinHeight="200"/>
+                <!-- Dialog Buttons for History tab (Optional) -->
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8" Margin="0,16,0,0">
+                    <Button Content="Cancel" Click="OnCancelClick" IsCancel="True" Width="80" HorizontalContentAlignment="Center"/>
+                </StackPanel>
+            </StackPanel>
+        </TabItem>
+    </TabControl>
 </Window>
