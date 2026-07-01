@@ -1,0 +1,70 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="using:SqlLogExplorer.ViewModels"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:models="using:SqlLogExplorer.Models"
+        mc:Ignorable="d" d:DesignWidth="450" d:DesignHeight="650"
+        x:Class="SqlLogExplorer.Views.ConnectionDialog"
+        x:DataType="vm:ConnectionDialogViewModel"
+        Title="Connect to Server"
+        Width="450" Height="650"
+        WindowStartupLocation="CenterOwner"
+        CanResize="False">
+
+    <Design.DataContext>
+        <vm:ConnectionDialogViewModel />
+    </Design.DataContext>
+
+    <StackPanel Margin="16" Spacing="12">
+        <!-- Connection Settings -->
+        <TextBlock Text="Server:" FontWeight="Bold"/>
+        <TextBox Text="{Binding Server}" PlaceholderText="Server name or IP address" />
+
+        <TextBlock Text="Authentication:" FontWeight="Bold"/>
+        <ComboBox ItemsSource="{Binding AuthModes}" SelectedItem="{Binding Auth}" HorizontalAlignment="Stretch" />
+
+        <!-- Credentials (visible only if SqlLogin) -->
+        <StackPanel Spacing="12" IsVisible="{Binding IsSqlLoginVisible}">
+            <TextBlock Text="User name:" />
+            <TextBox Text="{Binding UserName}" />
+
+            <TextBlock Text="Password:" />
+            <TextBox Text="{Binding Password}" PasswordChar="●" />
+        </StackPanel>
+
+        <!-- Encryption -->
+        <TextBlock Text="Encryption:" FontWeight="Bold" Margin="0,8,0,0"/>
+        <ComboBox ItemsSource="{Binding EncryptModes}" SelectedItem="{Binding Encrypt}" HorizontalAlignment="Stretch" />
+        
+        <CheckBox Content="Trust server certificate" IsChecked="{Binding TrustServerCertificate}" />
+
+        <!-- Connect to get databases -->
+        <Button Content="Connect" Command="{Binding ListDatabasesCommand}" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" Margin="0,8,0,0"/>
+
+        <!-- Database Selection -->
+        <TextBlock Text="Database:" FontWeight="Bold" Margin="0,8,0,0"/>
+        <ComboBox ItemsSource="{Binding Databases}" SelectedItem="{Binding SelectedDatabase}" HorizontalAlignment="Stretch" PlaceholderText="Select a database..." />
+
+        <!-- Time Window -->
+        <TextBlock Text="Time Window (Optional):" FontWeight="Bold" Margin="0,8,0,0"/>
+        <Grid ColumnDefinitions="Auto,*">
+            <TextBlock Grid.Column="0" Text="Start:" VerticalAlignment="Center" Margin="0,0,8,0"/>
+            <CalendarDatePicker Grid.Column="1" SelectedDate="{Binding StartTime}" HorizontalAlignment="Stretch" />
+        </Grid>
+        <Grid ColumnDefinitions="Auto,*">
+            <TextBlock Grid.Column="0" Text="End:" VerticalAlignment="Center" Margin="0,0,8,0"/>
+            <CalendarDatePicker Grid.Column="1" SelectedDate="{Binding EndTime}" HorizontalAlignment="Stretch" />
+        </Grid>
+
+        <!-- Status -->
+        <TextBlock Text="{Binding StatusMessage}" Foreground="Red" TextWrapping="Wrap" MinHeight="40" Margin="0,8,0,0" />
+
+        <!-- Dialog Buttons -->
+        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8" Margin="0,16,0,0">
+            <Button Content="OK" Click="OnOkClick" IsDefault="True" Width="80" HorizontalContentAlignment="Center"/>
+            <Button Content="Cancel" Click="OnCancelClick" IsCancel="True" Width="80" HorizontalContentAlignment="Center"/>
+        </StackPanel>
+
+    </StackPanel>
+</Window>
