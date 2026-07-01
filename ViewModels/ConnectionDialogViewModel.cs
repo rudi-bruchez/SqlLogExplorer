@@ -29,6 +29,8 @@ public partial class ConnectionDialogViewModel : ViewModelBase
     [ObservableProperty] private string? _selectedDatabase;
     [ObservableProperty] private DateTimeOffset? _startTime;
     [ObservableProperty] private DateTimeOffset? _endTime;
+    [ObservableProperty] private TimeSpan? _startTimeOfDay;
+    [ObservableProperty] private TimeSpan? _endTimeOfDay;
     [ObservableProperty] private string? _statusMessage;
 
     public ObservableCollection<string> Databases { get; } = new();
@@ -60,12 +62,30 @@ public partial class ConnectionDialogViewModel : ViewModelBase
         catch (Exception ex) { StatusMessage = $"Connection failed: {ex.Message}"; }
     }
 
+    public DateTime? GetResolvedStartTime()
+    {
+        if (StartTime is null) return null;
+        var date = StartTime.Value.Date;
+        if (StartTimeOfDay.HasValue) date = date.Add(StartTimeOfDay.Value);
+        return date;
+    }
+
+    public DateTime? GetResolvedEndTime()
+    {
+        if (EndTime is null) return null;
+        var date = EndTime.Value.Date;
+        if (EndTimeOfDay.HasValue) date = date.Add(EndTimeOfDay.Value);
+        return date;
+    }
+
     /// <summary>Résout la fenêtre temporelle en plage LSN (null = log actif complet).</summary>
     public async Task<LsnRange?> ResolveRangeAsync()
     {
-        if (StartTime is null && EndTime is null) return null;
+        var resolvedStart = GetResolvedStartTime();
+        var resolvedEnd = GetResolvedEndTime();
+        if (resolvedStart is null && resolvedEnd is null) return null;
         await using var cn = new SqlConnection(BuildConnectionString());
         await cn.OpenAsync();
-        return await LiveLsnResolver.ResolveAsync(cn, StartTime?.DateTime, EndTime?.DateTime);
+        return await LiveLsnResolver.ResolveAsync(cn, resolvedStart, resolvedEnd);
     }
 }
