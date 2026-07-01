@@ -79,6 +79,7 @@ public sealed class LogCache : IAsyncDisposable, IDisposable
         var pRlc1  = AddParam(cmd, "$rlc1");
 
         long inserted = 0;
+        cmd.Prepare();
         foreach (var r in records)
         {
             ct.ThrowIfCancellationRequested();
@@ -89,7 +90,7 @@ public sealed class LogCache : IAsyncDisposable, IDisposable
             pAlloc.Value = (object?)r.AllocUnitName ?? DBNull.Value;
             pRlc0.Value  = (object?)r.RowLogContents0 ?? DBNull.Value;
             pRlc1.Value  = (object?)r.RowLogContents1 ?? DBNull.Value;
-            inserted += await cmd.ExecuteNonQueryAsync(ct);
+            inserted += cmd.ExecuteNonQuery();
         }
 
         await tx.CommitAsync(ct);
@@ -124,7 +125,11 @@ public sealed class LogCache : IAsyncDisposable, IDisposable
         try
         {
             if (File.Exists(_databasePath)) File.Delete(_databasePath);
+            var shm = _databasePath + "-shm";
+            if (File.Exists(shm)) File.Delete(shm);
+            var wal = _databasePath + "-wal";
+            if (File.Exists(wal)) File.Delete(wal);
         }
-        catch (IOException) { /* best-effort : un handle résiduel ne doit pas faire planter la fermeture. */ }
+        catch (Exception) { /* best-effort : un handle résiduel ne doit pas faire planter la fermeture. */ }
     }
 }

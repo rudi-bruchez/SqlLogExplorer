@@ -42,7 +42,20 @@ public sealed class LocalDbInstanceManager
         };
         using var process = Process.Start(psi)
             ?? throw new InvalidOperationException("Impossible de démarrer sqllocaldb.");
-        await process.WaitForExitAsync(ct);
+
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        cts.CancelAfter(TimeSpan.FromSeconds(15)); // Strict 15s timeout
+
+        try
+        {
+            await process.WaitForExitAsync(cts.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            try { process.Kill(); } catch { /* ignore */ }
+            throw new TimeoutException($"Le processus sqllocaldb {arguments} a expiré.");
+        }
+
         if (throwOnError && process.ExitCode != 0)
         {
             var err = await process.StandardError.ReadToEndAsync(ct);
