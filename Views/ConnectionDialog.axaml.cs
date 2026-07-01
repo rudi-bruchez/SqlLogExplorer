@@ -42,9 +42,9 @@ public partial class ConnectionDialog : Window
         }
         finally
         {
-            if (sender is Button btn)
+            if (sender is Button b)
             {
-                btn.IsEnabled = true;
+                b.IsEnabled = true;
             }
         }
     }
