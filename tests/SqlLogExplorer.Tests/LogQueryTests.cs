@@ -70,4 +70,29 @@ public class LogQueryTests
         Assert.Single(result);
         Assert.Equal("LOP_DELETE_ROWS", result[0].Operation);
     }
+
+    [Fact]
+    public async Task CountByObjectAsync_GroupsByAllocUnit()
+    {
+        await using var cache = await SeedAsync();
+        var query = new LogQuery(cache.Connection);
+
+        var result = await query.CountByObjectAsync();
+
+        Assert.Equal(2, result.Count);
+        Assert.Equal("dbo.Clients", result[0].AllocUnitName);
+        Assert.Equal(5, result[0].Count);
+    }
+
+    [Fact]
+    public async Task CountByObjectAndOperationAsync_ReturnsMatrix()
+    {
+        await using var cache = await SeedAsync();
+        var query = new LogQuery(cache.Connection);
+
+        var result = await query.CountByObjectAndOperationAsync();
+
+        Assert.Contains(result, x => x.AllocUnitName == "dbo.Clients" && x.Operation == "LOP_INSERT_ROWS" && x.Count == 5);
+        Assert.Contains(result, x => x.AllocUnitName == "dbo.Orders"  && x.Operation == "LOP_DELETE_ROWS" && x.Count == 3);
+    }
 }
