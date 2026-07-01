@@ -15,6 +15,43 @@
         <vm:MainWindowViewModel/>
     </Design.DataContext>
 
-    <TextBlock Text="{Binding StatusMessage}" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+    <DockPanel Margin="12">
+        <StackPanel DockPanel.Dock="Top" Orientation="Vertical" Spacing="8" Margin="0,0,0,12">
+            <StackPanel Orientation="Horizontal" Spacing="8">
+                <Button Content="Open .trn file(s) (Offline)…" Click="OnOpenFile"/>
+                <TextBlock Text=" OR " VerticalAlignment="Center" FontWeight="Bold"/>
+                <TextBox x:Name="LiveDbConnectionString" Watermark="SQL Server connection string" Width="300" VerticalAlignment="Center"/>
+                <Button Content="Analyze Live DB" Click="OnAnalyzeLive"/>
+                <Button Content="Cancel" Command="{Binding CancelCommand}" IsVisible="{Binding IsLoading}"/>
+            </StackPanel>
+            <TextBlock Text="Requires sysadmin or VIEW SERVER STATE / db_owner on the target SQL Server."
+                       FontStyle="Italic" Opacity="0.7"/>
+            <StackPanel Orientation="Horizontal" Spacing="8">
+                <TextBlock Text="{Binding StatusMessage}" VerticalAlignment="Center"/>
+                <ProgressBar IsIndeterminate="True" Width="120" IsVisible="{Binding IsLoading}" VerticalAlignment="Center"/>
+            </StackPanel>
+        </StackPanel>
+
+        <TabControl>
+            <TabItem Header="By operation type">
+                <DataGrid ItemsSource="{Binding Statistics.ByOperation}" IsReadOnly="True"
+                          AutoGenerateColumns="False">
+                    <DataGrid.Columns>
+                        <DataGridTextColumn Header="Operation" Binding="{Binding Operation}" Width="*"/>
+                        <DataGridTextColumn Header="Count" Binding="{Binding Count}" Width="120"/>
+                    </DataGrid.Columns>
+                </DataGrid>
+            </TabItem>
+            <TabItem Header="By object">
+                <DataGrid ItemsSource="{Binding Statistics.ByObject}" IsReadOnly="True"
+                          AutoGenerateColumns="False">
+                    <DataGrid.Columns>
+                        <DataGridTextColumn Header="Object (AllocUnitName)" Binding="{Binding AllocUnitName}" Width="*"/>
+                        <DataGridTextColumn Header="Count" Binding="{Binding Count}" Width="120"/>
+                    </DataGrid.Columns>
+                </DataGrid>
+            </TabItem>
+        </TabControl>
+    </DockPanel>
 
 </Window>
