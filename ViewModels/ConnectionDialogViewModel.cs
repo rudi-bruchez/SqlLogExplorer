@@ -80,7 +80,7 @@ public partial class ConnectionDialogViewModel : ViewModelBase
     }
 
     /// <summary>Résout la fenêtre temporelle en plage LSN (null = log actif complet).</summary>
-    public async Task<LsnRange?> ResolveRangeAsync()
+    public async Task<LsnRange?> ResolveRangeAsync(System.Threading.CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(SelectedDatabase))
             throw new InvalidOperationException("Please select a database first.");
@@ -89,7 +89,7 @@ public partial class ConnectionDialogViewModel : ViewModelBase
         var resolvedEnd = GetResolvedEndTime();
         if (resolvedStart is null && resolvedEnd is null) return null;
         await using var cn = new SqlConnection(BuildConnectionString());
-        await cn.OpenAsync();
+        await cn.OpenAsync(ct);
         return await LiveLsnResolver.ResolveAsync(cn, resolvedStart, resolvedEnd);
     }
 }

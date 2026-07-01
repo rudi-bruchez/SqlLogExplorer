@@ -26,11 +26,19 @@ public partial class ConnectionDialog : Window
             {
                 vm.StatusMessage = "Connecting to resolve LSN range...";
                 
+                using var cts = new System.Threading.CancellationTokenSource(TimeSpan.FromSeconds(10));
                 // Retrieve the LsnRange
-                var range = await vm.ResolveRangeAsync();
+                var range = await vm.ResolveRangeAsync(cts.Token);
                 
                 // Close and return the connection string and LsnRange
                 Close((ConnectionString: vm.BuildConnectionString(), Range: range));
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            if (DataContext is ConnectionDialogViewModel vm)
+            {
+                vm.StatusMessage = "Failed to resolve LSN range: Connection timed out.";
             }
         }
         catch (Exception ex)
