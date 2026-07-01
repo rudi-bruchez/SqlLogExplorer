@@ -7,7 +7,7 @@ using Xunit;
 
 namespace SqlLogExplorer.Tests;
 
-public class SqlLogImporterTests
+public class LogImportServiceTests
 {
     private sealed class FakeBackend(int recordCount) : ILogParserBackend
     {
@@ -38,7 +38,7 @@ public class SqlLogImporterTests
         try
         {
             await using var cache = await LogCache.CreateAsync(dbPath);
-            var service = new SqlLogImporter(new FakeBackend(2500), cache, batchSize: 1000);
+            var service = new LogImportService(new FakeBackend(2500), cache, batchSize: 1000);
             var reports = new List<long>();
 
             var total = await service.ImportAsync(new[] { "ignored.trn" }, new SyncProgress<long>(reports.Add));

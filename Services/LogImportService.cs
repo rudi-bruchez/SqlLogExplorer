@@ -10,13 +10,13 @@ using SqlLogExplorer.Models;
 namespace SqlLogExplorer.Services;
 
 /// <summary>Streame un backend vers le cache par batchs, avec progression et annulation (spec §3.4).</summary>
-public sealed class SqlLogImporter
+public sealed class LogImportService
 {
     private readonly ILogParserBackend _backend;
     private readonly LogCache _cache;
     private readonly int _batchSize;
 
-    public SqlLogImporter(ILogParserBackend backend, LogCache cache, int batchSize = 1000)
+    public LogImportService(ILogParserBackend backend, LogCache cache, int batchSize = 1000)
     {
         _backend = backend;
         _cache = cache;
