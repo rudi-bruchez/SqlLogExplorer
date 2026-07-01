@@ -55,6 +55,40 @@ public sealed class LogQuery
         return list;
     }
 
+    public async Task<IReadOnlyList<ObjectCount>> CountByObjectAsync(
+        LogFilter? filter = null, CancellationToken ct = default)
+    {
+        await using var cmd = _connection.CreateCommand();
+        var where = AppendFilter(cmd, filter);
+        var and = where.Length == 0 ? " WHERE" : where + " AND";
+        cmd.CommandText =
+            $"SELECT AllocUnitName, COUNT(*) AS Nb FROM LogRecords{and} AllocUnitName IS NOT NULL " +
+            "GROUP BY AllocUnitName ORDER BY Nb DESC;";
+
+        var list = new List<ObjectCount>();
+        await using var reader = await cmd.ExecuteReaderAsync(ct);
+        while (await reader.ReadAsync(ct))
+            list.Add(new ObjectCount(reader.GetString(0), reader.GetInt64(1)));
+        return list;
+    }
+
+    public async Task<IReadOnlyList<ObjectOperationCount>> CountByObjectAndOperationAsync(
+        LogFilter? filter = null, CancellationToken ct = default)
+    {
+        await using var cmd = _connection.CreateCommand();
+        var where = AppendFilter(cmd, filter);
+        var and = where.Length == 0 ? " WHERE" : where + " AND";
+        cmd.CommandText =
+            $"SELECT AllocUnitName, Operation, COUNT(*) AS Nb FROM LogRecords{and} AllocUnitName IS NOT NULL " +
+            "GROUP BY AllocUnitName, Operation ORDER BY AllocUnitName, Nb DESC;";
+
+        var list = new List<ObjectOperationCount>();
+        await using var reader = await cmd.ExecuteReaderAsync(ct);
+        while (await reader.ReadAsync(ct))
+            list.Add(new ObjectOperationCount(reader.GetString(0), reader.GetString(1), reader.GetInt64(2)));
+        return list;
+    }
+
     /// <summary>Ajoute les paramètres de filtre à <paramref name="cmd"/> et renvoie la clause WHERE (préfixée d'un espace) ou "".</summary>
     internal static string AppendFilter(SqliteCommand cmd, LogFilter? filter)
     {
