@@ -20,8 +20,7 @@
             <StackPanel Orientation="Horizontal" Spacing="8">
                 <Button Content="Open .trn file(s) (Offline)…" Click="OnOpenFile"/>
                 <TextBlock Text=" OR " VerticalAlignment="Center" FontWeight="Bold"/>
-                <TextBox x:Name="LiveDbConnectionString" Watermark="SQL Server connection string" Width="300" VerticalAlignment="Center"/>
-                <Button Content="Analyze Live DB" Click="OnAnalyzeLive"/>
+                <Button Content="Connect (Live DB)…" Click="OnConnectLive"/>
                 <Button Content="Cancel" Command="{Binding CancelCommand}" IsVisible="{Binding IsLoading}"/>
             </StackPanel>
             <TextBlock Text="Requires sysadmin or VIEW SERVER STATE / db_owner on the target SQL Server."
