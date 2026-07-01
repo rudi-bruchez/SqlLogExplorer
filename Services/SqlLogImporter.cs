@@ -1,3 +1,4 @@
+
 using System;
 using System.Collections.Generic;
 using System.Threading;
@@ -52,7 +53,7 @@ public sealed class SqlLogImporter
         }
         finally
         {
-            await _backend.CleanupAsync(ct);
+            await _backend.CleanupAsync(CancellationToken.None);
         }
     }
 }
