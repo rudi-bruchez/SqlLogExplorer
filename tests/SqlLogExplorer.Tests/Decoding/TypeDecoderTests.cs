@@ -41,6 +41,35 @@ public class TypeDecoderTests
         Assert.Equal(new byte[] { 0xAB }, D(241, "AB"));
     }
 
+    [Theory]
+    [InlineData(48, 0, 0, 0)] [InlineData(48, 0, 0, 2)]
+    [InlineData(52, 0, 0, 1)] [InlineData(52, 0, 0, 3)]
+    [InlineData(56, 0, 0, 3)] [InlineData(56, 0, 0, 8)]
+    [InlineData(127, 0, 0, 7)] [InlineData(127, 0, 0, 4)]
+    [InlineData(104, 0, 0, 0)] [InlineData(104, 0, 0, 2)]
+    [InlineData(59, 0, 0, 8)] [InlineData(62, 0, 0, 4)]
+    [InlineData(60, 0, 0, 4)] [InlineData(122, 0, 0, 8)]
+    [InlineData(40, 0, 0, 4)] [InlineData(40, 0, 0, 2)]
+    [InlineData(61, 0, 0, 4)] [InlineData(58, 0, 0, 8)]
+    [InlineData(36, 0, 0, 15)]
+    [InlineData(106, 9, 2, 0)] [InlineData(106, 9, 2, 3)] [InlineData(108, 19, 4, 5)] [InlineData(108, 38, 10, 13)]
+    [InlineData(41, 0, 0, 0)] [InlineData(41, 0, 0, 4)] [InlineData(41, 7, 7, 4)]
+    [InlineData(42, 0, 0, 5)] [InlineData(42, 7, 7, 7)]
+    [InlineData(43, 0, 0, 6)] [InlineData(43, 7, 7, 9)]
+    public void WrongLength_ThrowsArgumentException(int type, int precision, int scale, int length)
+    {
+        var column = Col(1, "c", 4, 1, type, length) with { Precision = precision, Scale = scale };
+        var e = Assert.ThrowsAny<ArgumentException>(() => TypeDecoder.Decode(column, new byte[length]));
+        Assert.Contains("expected", e.Message);
+    }
+
+    // Longueurs bonnes, valeurs impossibles : toujours ArgumentException, jamais Overflow ou NotSupported.
+    [Fact] public void DateAfterYear9999_Throws() => Assert.ThrowsAny<ArgumentException>(() => D(40, "DBB937")); // 3652059
+    [Fact] public void TimeOf24Hours_Throws() => Assert.ThrowsAny<ArgumentException>(() => D(41, "805101", 0, 0)); // 86400 s
+    [Fact] public void Datetime2AfterYear9999_Throws() => Assert.ThrowsAny<ArgumentException>(() => D(42, "000000" + "DBB937", 0, 0));
+    [Fact] public void DecimalMagnitudeAbove38Digits_Throws() => Assert.ThrowsAny<ArgumentException>(() => D(108, "01" + string.Concat(Enumerable.Repeat("FFFFFFFF", 4)), 38, 0));
+    [Fact] public void UnknownCodePage_Throws() => Assert.ThrowsAny<ArgumentException>(() => D(167, "41", codePage: 12345));
+
     private static string DateHex(DateOnly d) => Convert.ToHexString(BitConverter.GetBytes(d.DayNumber))[..6];
     private static string Ticks5Hex(long ticks) => Convert.ToHexString(BitConverter.GetBytes(ticks))[..10];
     private static string DaysHex1900(DateTime d) => Convert.ToHexString(BitConverter.GetBytes((int)(d.Date - new DateTime(1900, 1, 1)).TotalDays));

@@ -16,7 +16,48 @@ public static class TypeDecoder
         48 or 52 or 56 or 127 or 104 or 106 or 108 or 60 or 122 or 59 or 62 or
         40 or 41 or 61 or 58 or 42 or 43 or 36 or 175 or 167 or 239 or 231 or 173 or 165;
 
-    public static object? Decode(SchemaColumn c, ReadOnlySpan<byte> b) => c.SystemTypeId switch
+    /// <summary>Lève toujours ArgumentException (ou une sous-classe) sur une entrée invalide : longueur fausse ou valeur hors limites.</summary>
+    public static object? Decode(SchemaColumn c, ReadOnlySpan<byte> b)
+    {
+        CheckLength(c, b.Length);
+        try
+        {
+            return DecodeValue(c, b);
+        }
+        catch (Exception e) when (e is OverflowException or NotSupportedException)
+        {
+            throw new ArgumentException($"value out of range for system type {c.SystemTypeId}: {e.Message}", e);
+        }
+    }
+
+    private static void CheckLength(SchemaColumn c, int actual)
+    {
+        var expected = c.SystemTypeId switch
+        {
+            48 or 104 => 1,
+            52 => 2,
+            56 or 59 or 122 or 58 => 4,
+            127 or 62 or 60 or 61 => 8,
+            40 => 3,
+            36 => 16,
+            106 or 108 => c.Precision switch
+            {
+                >= 1 and <= 9 => 5, >= 10 and <= 19 => 9, >= 20 and <= 28 => 13, >= 29 and <= 38 => 17,
+                _ => throw new ArgumentException($"invalid precision {c.Precision} for decimal"),
+            },
+            41 => TimeLength(CheckedScale(c)),
+            42 => TimeLength(CheckedScale(c)) + 3,
+            43 => TimeLength(CheckedScale(c)) + 5,
+            _ => actual, // chaînes et binaires : toute longueur convient ; type non pris en charge : octets bruts
+        };
+        if (actual != expected) throw new ArgumentException($"expected {expected} bytes for system type {c.SystemTypeId}, got {actual}");
+        if (c.SystemTypeId == 104 && c.LeafBitPosition is < 0 or > 7) throw new ArgumentException($"invalid bit position {c.LeafBitPosition}");
+    }
+
+    private static int CheckedScale(SchemaColumn c) =>
+        c.Scale is >= 0 and <= 7 ? c.Scale : throw new ArgumentException($"invalid scale {c.Scale} for system type {c.SystemTypeId}");
+
+    private static object? DecodeValue(SchemaColumn c, ReadOnlySpan<byte> b) => c.SystemTypeId switch
     {
         48 => b[0],
         52 => BinaryPrimitives.ReadInt16LittleEndian(b),
