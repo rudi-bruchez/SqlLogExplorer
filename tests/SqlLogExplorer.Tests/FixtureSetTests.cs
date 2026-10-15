@@ -16,4 +16,16 @@ public class FixtureSetTests
         Assert.Equal(expected[13..], insert.RowLogContents0![13..]);
         Assert.Equal(5, schema.Columns.Count);
     }
+
+    [Fact]
+    public void Modify2025_PageOfEveryURecord_IsFoundInThePageDump()
+    {
+        // Le journal rend les identifiants de page en minuscules, DBCC PAGE (via FORMAT) en majuscules : 0001:000001a0.
+        var fixture = FixtureSet.Load("2025", "modify");
+        var (_, records) = fixture.ForTable("dbo.u");
+        Assert.NotEmpty(records);
+        Assert.Contains(records, r => r.PageId!.Any(char.IsLetter) && r.PageId!.Substring(5).Any(char.IsLetter));
+        foreach (var record in records)
+            Assert.Contains(fixture.Pages, p => p.PageId == record.PageId);
+    }
 }

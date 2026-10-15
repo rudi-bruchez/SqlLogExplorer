@@ -18,3 +18,15 @@ INSERT dbo.s VALUES (1, 10); INSERT dbo.s VALUES (2, 10); INSERT dbo.s VALUES (0
 UPDATE dbo.s SET a = 11 WHERE id = 1;
 BEGIN TRAN; INSERT dbo.s VALUES (7, 70); ROLLBACK;
 BEGIN TRAN; DELETE dbo.s WHERE id = 2; ROLLBACK;
+CREATE TABLE dbo.m (id int NOT NULL PRIMARY KEY, a int NULL, b int NULL, c varchar(20) NULL, d varchar(20) NULL);
+INSERT dbo.m VALUES (1, 10, 20, 'cc', 'dd');
+UPDATE dbo.m SET a = 11, b = 21 WHERE id = 1;
+UPDATE dbo.m SET c = 'ccc', d = 'ddd' WHERE id = 1;
+UPDATE dbo.m SET c = NULL WHERE id = 1;
+UPDATE dbo.m SET c = 'back' WHERE id = 1;
+CREATE TABLE dbo.m2 (id int NOT NULL PRIMARY KEY, a int NULL, x char(50) NULL, b int NULL, c varchar(20) NULL, w varchar(100) NULL, d varchar(20) NULL);
+INSERT dbo.m2 VALUES (1, 10, 'x', 20, 'cc', REPLICATE('w', 60), 'dd');
+UPDATE dbo.m2 SET a = 11, b = 21 WHERE id = 1;
+UPDATE dbo.m2 SET c = 'ccc', d = 'ddd' WHERE id = 1;
+UPDATE dbo.m2 SET c = NULL WHERE id = 1;
+UPDATE dbo.m2 SET c = 'back' WHERE id = 1;

@@ -45,11 +45,12 @@ public static class FixtureSet
         var doc = JsonSerializer.Deserialize<Document>(File.ReadAllText(path), Options)
             ?? throw new InvalidDataException($"Fixture vide : {path}");
 
+        // Les identifiants de page du journal sont en minuscules, ceux de DBCC PAGE en majuscules : on stocke en majuscules, comme les LSN.
         // Un tableau JSON vide passé par JSON_QUERY peut devenir null : on le traite comme vide.
         var log = (doc.Log ?? []).Select(l => new LogRecord(
             SqlLogExplorer.Models.Lsn.Normalize(l.Lsn), l.Operation, l.Context, l.TransactionId, l.AllocUnitName, l.Rlc0, l.Rlc1)
         {
-            AllocUnitId = l.AllocUnitId, PartitionId = l.PartitionId, PageId = l.PageId, SlotId = l.SlotId,
+            AllocUnitId = l.AllocUnitId, PartitionId = l.PartitionId, PageId = l.PageId?.ToUpperInvariant(), SlotId = l.SlotId,
             OffsetInRow = l.OffsetInRow, ModifySize = l.ModifySize, NumElements = l.NumElements,
             Description = l.Description, TransactionName = l.TransactionName,
             RowLogContents2 = l.Rlc2, RowLogContents3 = l.Rlc3, RowLogContents4 = l.Rlc4, RowLogContents5 = l.Rlc5,
@@ -69,7 +70,7 @@ public static class FixtureSet
             return new TableSchema(g.Key, first.SchemaName, first.TableName, first.IndexId, first.AllocUnitType, columns);
         });
 
-        var pages = (doc.Pages ?? []).Select(p => new PageDumpLine(p.Style, p.PageId, p.ParentObject ?? "", p.Object ?? "", p.Field ?? "", p.Value ?? "")).ToList();
+        var pages = (doc.Pages ?? []).Select(p => new PageDumpLine(p.Style, p.PageId.ToUpperInvariant(), p.ParentObject ?? "", p.Object ?? "", p.Field ?? "", p.Value ?? "")).ToList();
         return new Fixture(version, log, schemas, pages);
     }
 

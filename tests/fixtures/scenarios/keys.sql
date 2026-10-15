@@ -20,3 +20,9 @@ CREATE TABLE dbo.ix (id int NOT NULL PRIMARY KEY, a int NULL, name varchar(20) N
 CREATE INDEX ix_name ON dbo.ix (name);
 INSERT dbo.ix VALUES (1, 100, 'alice');
 DELETE dbo.ix WHERE id = 1;
+CREATE TABLE dbo.ko (k1 int NOT NULL, k2 int NOT NULL, v int NULL, PRIMARY KEY (k2, k1));
+INSERT dbo.ko VALUES (1, 20, 1), (2, 10, 2);
+UPDATE dbo.ko SET v = v + 10;
+CREATE TABLE dbo.kd (k int NOT NULL, v int NULL, PRIMARY KEY (k DESC));
+INSERT dbo.kd VALUES (1, 1), (2, 2);
+UPDATE dbo.kd SET v = v + 10;
