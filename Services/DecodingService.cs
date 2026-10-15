@@ -4,6 +4,7 @@ using System.Globalization;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using SqlLogExplorer.Backends;
 using SqlLogExplorer.Data;
 using SqlLogExplorer.Decoding;
 using SqlLogExplorer.Models;
@@ -82,8 +83,14 @@ public sealed class DecodingService
         if (chain is null)
             return new Inspection(record, null, null, null, FragmentChanges(record, data), null, outcome, false, schemaMessage, null, "key not decodable", false);
 
+        return Replayed(record, data, chain, outcome, schemaMessage, null);
+    }
+
+    /// <summary>Rejoue la chaîne, avec la ligne courante pour ancre 3 quand elle est fournie, et en fait l'inspection.</summary>
+    private Inspection Replayed(LogRecord record, TableSchema data, RowChain chain, TxOutcome? outcome, string? schemaMessage, byte[]? currentRow)
+    {
         var tx = chain.Transactions;
-        var result = RowReplayer.Replay(chain.Records, record.Lsn, RowReplayer.Classify(tx), RowReplayer.AdrReverts(tx), RowReplayer.FirstUndoLsns(tx));
+        var result = RowReplayer.Replay(chain.Records, record.Lsn, RowReplayer.Classify(tx), RowReplayer.AdrReverts(tx), RowReplayer.FirstUndoLsns(tx), currentRow);
         var before = result.Before is null ? null : RowDecoder.Decode(result.Before, data);
         var after = result.After is null ? null : RowDecoder.Decode(result.After, data);
         var changes = before is not null && after is not null ? Compare(before, after) : FragmentChanges(record, data);
@@ -91,6 +98,46 @@ public sealed class DecodingService
         // Pas pour une transaction partiellement annulée : l'enregistrement termine la chaîne (spec03 §7.3), l'ancre 3 ne peut pas aboutir.
         var canRebuild = _isLive && data.IndexId == 1 && result.Status == NoImage && outcome != TxOutcome.PartlyRolledBack;
         return new Inspection(record, null, before, after, changes, result.Status, outcome, result.IncludesUnknownOutcome, schemaMessage, null, null, canRebuild);
+    }
+
+    /// <summary>Ancre 3 (spec03 §7.2), action explicite de l'inspecteur : la ligne courante, lue sous verrou avec la suite du journal,
+    /// rejouée à rebours jusqu'à l'enregistrement choisi. Les règles du rejeu valent comme pour les autres ancres (spec03 §7.3, §7.4).
+    /// L'échec d'une instruction lève une exception qui nomme l'étape (spec03 §8).</summary>
+    public async Task<Inspection> RebuildFromCurrentRowAsync(LogRecord record, CurrentRowReader reader, CancellationToken ct = default)
+    {
+        record = record with { Lsn = Lsn.Normalize(record.Lsn) };
+        var inspection = await InspectAsync(record, ct);
+        // Un insert ou un delete est sa propre image ; une compensation n'a pas de clé (spec03 §7.1).
+        if (record.Operation is not ("LOP_MODIFY_ROW" or "LOP_MODIFY_COLUMNS") || record.IsCompensation) return inspection;
+        var (schema, _) = await SchemaAsync(record, ct);
+        if (schema is not { IsDataRows: true }) return inspection;
+
+        Inspection Unavailable(Inspection i, string status) => i with { Before = null, After = null, ReplayStatus = status, CanRebuildFromCurrentRow = false };
+        if (schema.IndexId == 0) return Unavailable(inspection, "not available for a heap");
+        if (!await reader.IsAvailableForDatabaseAsync(ct)) return Unavailable(inspection, "not available on a database with Accelerated Database Recovery");
+        var key = record.RowLogContents2 is { } index ? KeyDecoder.ValuesFromIndexRecord(index, schema) : null;
+        if (key is null) return Unavailable(inspection, "key not decodable, the current row cannot be sought");
+        var lastLsn = await _query.GetLastLsnAsync(ct) ?? record.Lsn;
+
+        // La suite du journal entre dans le cache comme un import ; une suppression de la ligne après l'enregistrement choisi,
+        // hors transaction annulée (son effet net est nul), donne l'ancre 2.
+        async Task<bool> AcceptSuffix(IReadOnlyList<LogRecord> suffix, CancellationToken c)
+        {
+            await _cache.InsertBatchAsync(suffix, c);
+            var chain = await ChainAsync(record, schema, c);
+            if (chain is null) return true;
+            var outcomes = RowReplayer.Classify(chain.Transactions);
+            return !chain.Records.Any(r => r.Operation == Delete && string.CompareOrdinal(r.Lsn, record.Lsn) > 0
+                && (r.TransactionId is null || outcomes.GetValueOrDefault(r.TransactionId, TxOutcome.Unknown) != TxOutcome.RolledBack));
+        }
+
+        var read = await reader.ReadAsync(schema, key, lastLsn, AcceptSuffix, ct);
+        if (read.Unavailable == CurrentRowReader.Deleted) return await InspectAsync(record, ct);
+        if (read.Row is null) return Unavailable(await InspectAsync(record, ct), read.Unavailable ?? CurrentRowReader.NotThisRow);
+
+        var rowChain = await ChainAsync(record, schema, ct);
+        if (rowChain is null) return Unavailable(inspection, "key not decodable");
+        return Replayed(record, schema, rowChain, OutcomeOf(record, RowReplayer.Classify(rowChain.Transactions)), null, read.Row);
     }
 
     /// <summary>La chaîne de la ligne de l'enregistrement, celle que l'inspection rejoue ; vide sans schéma ou sans clé décodable.</summary>

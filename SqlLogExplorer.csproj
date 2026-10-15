@@ -15,6 +15,7 @@
 
   <ItemGroup>
     <EmbeddedResource Include="Backends\Sql\*.sql" />
+    <InternalsVisibleTo Include="SqlLogExplorer.Tests" />
   </ItemGroup>
 
   <ItemGroup>

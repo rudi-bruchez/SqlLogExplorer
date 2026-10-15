@@ -43,6 +43,46 @@ public static class KeyDecoder
 
     public static string? FromIndexRecord(byte[]? record, TableSchema schema)
     {
+        if (Walk(record, schema) is not { } walk) return null;
+        var sb = new StringBuilder();
+        foreach (var part in walk.Parts)
+        {
+            if (part.IsNull) AppendNull(sb);
+            else if (part.Bit is { } on) AppendBit(sb, on);   // bits étrangers de l'octet masqués
+            else AppendBytes(sb, part.Bytes);
+        }
+        if (walk.Uniqueifier is { } u) sb.Append('U').Append(u);
+        return sb.ToString();
+    }
+
+    /// <summary>Valeurs de la clé lues dans l'enregistrement d'index de RowLog Contents 2, dans l'ordre de la clé (ancre 3, spec03 §7.2) :
+    /// null pour une colonne NULL, puis l'uniqueifier (int) si l'index en a un. null quand la clé n'est pas décodable
+    /// ou qu'une colonne de clé est d'un type que TypeDecoder ne rend pas en valeur.</summary>
+    public static IReadOnlyList<(SchemaColumn Column, object? Value)>? ValuesFromIndexRecord(byte[] record, TableSchema schema)
+    {
+        if (Walk(record, schema) is not { } walk) return null;
+        var values = new List<(SchemaColumn Column, object? Value)>();
+        foreach (var part in walk.Parts)
+        {
+            if (part.IsNull) { values.Add((part.Column, null)); continue; }
+            // La position du bit dans la ligne (leaf_bit_position) ne vaut pas dans l'index : la marche donne le bit lui-même.
+            if (part.Bit is { } on) { values.Add((part.Column, on)); continue; }
+            if (!TypeDecoder.IsSupported(part.Column.SystemTypeId)) return null;
+            try { values.Add((part.Column, TypeDecoder.Decode(part.Column, part.Bytes))); }
+            catch (ArgumentException) { return null; }
+        }
+        if (walk.Uniqueifier is { } u) values.Add((schema.Uniqueifier!, u));
+        return values;
+    }
+
+    /// <summary>Une colonne de clé lue dans l'enregistrement d'index : Bit pour une colonne bit, sinon ses octets stockés.</summary>
+    private sealed record KeyPart(SchemaColumn Column, bool IsNull, byte[] Bytes, bool? Bit);
+
+    private sealed record IndexWalk(IReadOnlyList<KeyPart> Parts, int? Uniqueifier);
+
+    /// <summary>Marche de l'enregistrement d'index (docs/research/rowlog-layouts.md), commune à FromIndexRecord et ValuesFromIndexRecord.</summary>
+    private static IndexWalk? Walk(byte[]? record, TableSchema schema)
+    {
         if (record is null || record.Length < 1) return null;
         var keys = schema.KeyColumns.ToList();
         var u = schema.Uniqueifier;
@@ -97,36 +137,35 @@ public static class KeyDecoder
             }
         }
 
-        var sb = new StringBuilder();
+        var parts = new List<KeyPart>();
         var variableIndex = 0;
         for (var i = 0; i < keys.Count; i++)
         {
             var c = keys[i];
-            ReadOnlySpan<byte> bytes;
             if (c.IsFixed || c.IsBit)
             {
                 var (offset, bit) = fixedAt[c];
                 var length = c.IsBit ? 1 : c.MaxInrowLength;
                 if (offset + length > record.Length) return null;
-                if (IsNull(i)) { AppendNull(sb); continue; }
-                if (bit >= 0) { AppendBit(sb, (record[offset] >> bit & 1) == 1); continue; }   // bits étrangers de l'octet masqués
-                bytes = record.AsSpan(offset, length);
+                if (IsNull(i)) parts.Add(new KeyPart(c, true, [], null));
+                else if (bit >= 0) parts.Add(new KeyPart(c, false, [], (record[offset] >> bit & 1) == 1));
+                else parts.Add(new KeyPart(c, false, record.AsSpan(offset, length).ToArray(), null));
             }
             else
             {
-                bytes = Variable(record, ends, dataStart, variableIndex++);
-                if (IsNull(i)) { AppendNull(sb); continue; }
+                var bytes = Variable(record, ends, dataStart, variableIndex++);
+                parts.Add(new KeyPart(c, IsNull(i), IsNull(i) ? [] : bytes.ToArray(), null));
             }
-            AppendBytes(sb, bytes);
         }
 
+        int? uniqueifier = null;
         if (u is not null)
         {
             var bytes = Variable(record, ends, dataStart, variableIndex);
             if (bytes.Length != 4) return null;   // toujours 4 octets dans l'index, même pour la première ligne d'une clé
-            sb.Append('U').Append(BinaryPrimitives.ReadInt32LittleEndian(bytes));
+            uniqueifier = BinaryPrimitives.ReadInt32LittleEndian(bytes);
         }
-        return sb.ToString();
+        return new IndexWalk(parts, uniqueifier);
     }
 
     private static ReadOnlySpan<byte> Variable(byte[] record, List<int> ends, int dataStart, int index)

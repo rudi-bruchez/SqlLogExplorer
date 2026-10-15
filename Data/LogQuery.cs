@@ -95,6 +95,14 @@ public sealed class LogQuery
         return list;
     }
 
+    /// <summary>Le plus grand LSN du cache, d'où l'ancre 3 reprend la lecture du journal (spec03 §7.2) ; null pour un cache vide.</summary>
+    public async Task<string?> GetLastLsnAsync(CancellationToken ct = default)
+    {
+        await using var cmd = _connection.CreateCommand();
+        cmd.CommandText = "SELECT MAX(LSN) FROM LogRecords;";
+        return await cmd.ExecuteScalarAsync(ct) as string;
+    }
+
     private static async Task<IReadOnlyList<LogRecord>> ReadAllAsync(SqliteCommand cmd, CancellationToken ct)
     {
         var list = new List<LogRecord>();
