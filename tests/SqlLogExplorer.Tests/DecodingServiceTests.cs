@@ -427,4 +427,139 @@ public class DecodingServiceTests
         Assert.Equal("id=1, a=21, b=zz, c=True, d=True", Values(x.Row));
         Assert.Equal(TxOutcome.Committed, x.Outcome);
     }
+
+    // ---- Review Focus : unités inconnues, doublons, ordre mélangé, cas limites ----
+
+    [Theory, MemberData(nameof(Versions))]
+    public async Task UnknownAllocationUnit_WithAShortImage_ReturnsAProblemRow(string version)
+    {
+        var f = FixtureSet.Load(version, "modify");
+        var insert = f.ForTable("dbo.t").Records.First(r => r.Operation == "LOP_INSERT_ROWS");
+        var odd = insert with { AllocUnitId = 424242, RowLogContents0 = [0x30, 0x00, 0x0D] };
+        await using var cache = await CacheAsync(f.Log);
+
+        var x = await new DecodingService(cache, Lookup(f), false).InspectAsync(odd);
+
+        Assert.NotNull(x.Row);
+        Assert.True(x.Row!.HasProblem);
+        Assert.Equal("allocation unit not found in the connected database", x.SchemaMessage);
+    }
+
+    [Fact]
+    public async Task TwoVersionsInOneCache_AreReturnedInLsnOrder_AndEveryInspectionReturns()
+    {
+        // Deux bases différentes : on ne vérifie que l'ordre et l'absence d'exception.
+        var f17 = FixtureSet.Load("2017", "modify");
+        var f22 = FixtureSet.Load("2022", "modify");
+        await using var cache = await CacheAsync(f22.Log, f17.Log);
+        var lookup = new Func<long, CancellationToken, Task<TableSchema?>>((au, _) =>
+            Task.FromResult(f17.Schemas.TryGetValue(au, out var s) ? s : f22.Schemas.GetValueOrDefault(au)));
+        var service = new DecodingService(cache, lookup, false);
+
+        var page = await new LogQuery(cache.Connection).GetPageAsync(0, 100000);
+
+        Assert.Equal(page.Select(r => r.Lsn).OrderBy(l => l, StringComparer.Ordinal).ToList(), page.Select(r => r.Lsn).ToList());
+        Assert.True(page.Count >= f17.Log.Count);
+        foreach (var r in page)
+            Assert.NotNull(await service.InspectAsync(r));
+    }
+
+    [Theory, MemberData(nameof(Versions))]
+    public async Task SameFixtureImportedTwice_GivesIdenticalInspections(string version)
+    {
+        var f = FixtureSet.Load(version, "modify");
+        await using var once = await CacheAsync(f.Log);
+        await using var twice = await CacheAsync(f.Log, f.Log);
+        var a = new DecodingService(once, Lookup(f), false);
+        var b = new DecodingService(twice, Lookup(f), false);
+
+        foreach (var r in f.Log.Where(r => r.Operation is "LOP_INSERT_ROWS" or "LOP_DELETE_ROWS" or "LOP_MODIFY_ROW" or "LOP_MODIFY_COLUMNS"))
+        {
+            var x = await a.InspectAsync(r);
+            var y = await b.InspectAsync(r);
+            Assert.Equal(Values(x.Row), Values(y.Row));
+            Assert.Equal(Values(x.Before), Values(y.Before));
+            Assert.Equal(Values(x.After), Values(y.After));
+            Assert.Equal(x.ReplayStatus, y.ReplayStatus);
+            Assert.Equal(x.Outcome, y.Outcome);
+            Assert.Equal(x.Warning, y.Warning);
+            Assert.Equal(x.Changes.Count, y.Changes.Count);
+        }
+    }
+
+    [Theory, MemberData(nameof(Versions))]
+    public async Task Modify_WithATruncatedKey_ReportsKeyNotDecodable(string version)
+    {
+        var f = FixtureSet.Load(version, "modify");
+        var mod = Modifies(f.ForTable("dbo.t").Records)[0];
+        Assert.NotNull(mod.RowLogContents2);
+        var broken = mod with { RowLogContents2 = mod.RowLogContents2![..1] };
+        await using var cache = await CacheAsync(f.Log);
+
+        var x = await new DecodingService(cache, Lookup(f), true).InspectAsync(broken);
+
+        Assert.Equal("key not decodable", x.Warning);
+        Assert.Null(x.Before);
+        Assert.Null(x.After);
+        Assert.Null(x.ReplayStatus);
+        Assert.False(x.CanRebuildFromCurrentRow);
+    }
+
+    [Theory, MemberData(nameof(Versions))]
+    public async Task SelectedCompensationModify_IsNotReplayed(string version)
+    {
+        var f = FixtureSet.Load(version, "modify");
+        var (_, records) = f.ForTable("dbo.t");
+        var comp = records.First(r => r.Operation is "LOP_MODIFY_ROW" or "LOP_MODIFY_COLUMNS" && r.IsCompensation && r.Context is "LCX_CLUSTERED" or "LCX_HEAP");
+        await using var cache = await CacheAsync(f.Log);
+
+        var x = await new DecodingService(cache, Lookup(f), true).InspectAsync(comp);
+
+        Assert.Null(x.Before);
+        Assert.Null(x.After);
+        Assert.Null(x.Row);
+        Assert.Null(x.ReplayStatus);
+        Assert.Null(x.Warning);
+        Assert.False(x.CanRebuildFromCurrentRow);
+        Assert.All(x.Changes, c => Assert.True(c.Changed));
+    }
+
+    [Theory, MemberData(nameof(Versions))]
+    public async Task FragmentOnASharedBitByte_NamesOnlyTheBitThatChanged(string version)
+    {
+        // modify.sql : d passe de 0 à 1 (c reste à 1) dans l'octet de bits que c et d partagent.
+        var f = FixtureSet.Load(version, "modify");
+        var (_, records) = f.ForTable("dbo.t");
+        var mods = Modifies(records);
+        // Sans l'insert ni le delete : pas d'ancre, donc le fragment seul.
+        var anchors = records.Where(r => r.Operation is "LOP_INSERT_ROWS" or "LOP_DELETE_ROWS").Select(r => r.Lsn).ToHashSet();
+        await using var cache = await CacheAsync(f.Log.Where(r => !anchors.Contains(r.Lsn)).ToList());
+
+        var x = await new DecodingService(cache, Lookup(f), false).InspectAsync(mods[2]);
+
+        Assert.Equal(NoImage, x.ReplayStatus);
+        var change = Assert.Single(x.Changes);
+        Assert.Equal(new ColumnChange("d", false, true, true), change);
+    }
+
+    [Theory, MemberData(nameof(Versions))]
+    public async Task PartlyRolledBackModify_NeverOffersTheCurrentRow(string version)
+    {
+        var f = FixtureSet.Load(version, "modify");
+        var (_, records) = f.ForTable("dbo.t");
+        var mods = Modifies(records);
+        var anchors = records.Where(r => r.Operation is "LOP_INSERT_ROWS" or "LOP_DELETE_ROWS").Select(r => r.Lsn).ToHashSet();
+        // Avec et sans ancre dans le cache : dans les deux cas la chaîne s'arrête sur la transaction partiellement annulée.
+        foreach (var log in new[] { f.Log, f.Log.Where(r => !anchors.Contains(r.Lsn)).ToList() })
+        {
+            await using var cache = await CacheAsync(log);
+            var service = new DecodingService(cache, Lookup(f), true);
+            foreach (var m in mods.Skip(7))
+            {
+                var x = await service.InspectAsync(m);
+                Assert.Equal(TxOutcome.PartlyRolledBack, x.Outcome);
+                Assert.False(x.CanRebuildFromCurrentRow, $"{version} {m.Lsn}: {x.ReplayStatus}");
+            }
+        }
+    }
 }

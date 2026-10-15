@@ -88,7 +88,8 @@ public sealed class DecodingService
         var after = result.After is null ? null : RowDecoder.Decode(result.After, data);
         var changes = before is not null && after is not null ? Compare(before, after) : FragmentChanges(record, data);
         // Ancres 1 et 2 sans image : la ligne courante peut servir, en direct, sur une table clustered (spec03 §7.2).
-        var canRebuild = _isLive && data.IndexId == 1 && result.Status == NoImage;
+        // Pas pour une transaction partiellement annulée : l'enregistrement termine la chaîne (spec03 §7.3), l'ancre 3 ne peut pas aboutir.
+        var canRebuild = _isLive && data.IndexId == 1 && result.Status == NoImage && outcome != TxOutcome.PartlyRolledBack;
         return new Inspection(record, null, before, after, changes, result.Status, outcome, result.IncludesUnknownOutcome, schemaMessage, null, null, canRebuild);
     }
 
