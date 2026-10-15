@@ -1,0 +1,430 @@
+using SqlLogExplorer.Data;
+using SqlLogExplorer.Decoding;
+using SqlLogExplorer.Models;
+using SqlLogExplorer.Services;
+using Xunit;
+
+namespace SqlLogExplorer.Tests;
+
+public class DecodingServiceTests
+{
+    public static TheoryData<string> Versions => new() { "2017", "2019", "2022", "2025" };
+    public static TheoryData<string> AdrVersions => new() { "2019", "2022", "2025" };
+
+    private const string NoImage = "no full image of this row available";
+
+    private static async Task<LogCache> CacheAsync(params IReadOnlyList<LogRecord>[] batches)
+    {
+        var cache = await LogCache.CreateAsync(Path.Combine(Path.GetTempPath(), $"sqllogexp_{Guid.NewGuid():N}.db"));
+        foreach (var batch in batches) await cache.InsertBatchAsync(batch);
+        return cache;
+    }
+
+    private static Func<long, CancellationToken, Task<TableSchema?>> Lookup(Fixture f) =>
+        (au, _) => Task.FromResult(f.Schemas.TryGetValue(au, out var s) ? s : null);
+
+    private static string Values(DecodedRow? row) =>
+        row is null ? "<null>" : string.Join(", ", row.Columns.Select(c => $"{c.Name}={c.Value ?? "NULL"}"));
+
+    private static object? Value(DecodedRow? row, string column) => row!.Columns.Single(c => c.Name == column).Value;
+
+    private static List<LogRecord> Modifies(IEnumerable<LogRecord> records) =>
+        records.Where(r => r.Operation is "LOP_MODIFY_ROW" or "LOP_MODIFY_COLUMNS" && !r.IsCompensation).ToList();
+
+    private static async Task<List<(string Lsn, string? Context, string Operation, bool Compensation, string? RowKey)>> KeysAsync(LogCache cache, long allocUnitId)
+    {
+        await using var cmd = cache.Connection.CreateCommand();
+        cmd.CommandText = "SELECT LSN, Context, Operation, Description, RowKey FROM LogRecords WHERE AllocUnitId = $au ORDER BY LSN;";
+        cmd.Parameters.AddWithValue("$au", allocUnitId);
+        var list = new List<(string, string?, string, bool, string?)>();
+        await using var r = await cmd.ExecuteReaderAsync();
+        while (await r.ReadAsync())
+            list.Add((r.GetString(0), r.IsDBNull(1) ? null : r.GetString(1), r.GetString(2),
+                !r.IsDBNull(3) && r.GetString(3).Contains("COMPENSATION"), r.IsDBNull(4) ? null : r.GetString(4)));
+        return list;
+    }
+
+    // ---- modify : dbo.t ----
+
+    // modify.sql, dans l'ordre : a = 11, b = 'abcdef', d = 1, TABLOCKX a = 20, b = NULL, b = 'zz'.
+    private static readonly string[] ExpectedT =
+    [
+        "id=1, a=11, b=abc, c=True, d=False",
+        "id=1, a=11, b=abcdef, c=True, d=False",
+        "id=1, a=11, b=abcdef, c=True, d=True",
+        "id=1, a=20, b=abcdef, c=True, d=True",
+        "id=1, a=20, b=NULL, c=True, d=True",
+        "id=1, a=20, b=zz, c=True, d=True",
+    ];
+
+    [Theory, MemberData(nameof(Versions))]
+    public async Task Modify_RebuildsEveryModifyOfDboT_AndKeysTheAllocationUnit(string version)
+    {
+        var f = FixtureSet.Load(version, "modify");
+        var (schema, records) = f.ForTable("dbo.t");
+        var mods = Modifies(records);
+        Assert.Equal(9, mods.Count);
+        await using var cache = await CacheAsync(f.Log);
+        var service = new DecodingService(cache, Lookup(f), isLive: false);
+
+        for (var i = 0; i < ExpectedT.Length; i++)
+        {
+            var x = await service.InspectAsync(mods[i]);
+            Assert.True(x.After is not null, $"{version} modify #{i}: {x.ReplayStatus}");
+            Assert.Equal(ExpectedT[i], Values(x.After));
+            Assert.StartsWith("rebuilt", x.ReplayStatus);
+            Assert.Equal(TxOutcome.Committed, x.Outcome);
+            Assert.Null(x.Row);
+            Assert.Null(x.SchemaMessage);
+            Assert.False(x.CanRebuildFromCurrentRow);
+        }
+
+        // La première inspection a posé la clé de chaque enregistrement de données de dbo.t, sauf les compensations, et d'aucun LCX_PFS.
+        var keys = await KeysAsync(cache, schema.AllocUnitId);
+        string[] data = ["LCX_HEAP", "LCX_CLUSTERED", "LCX_MARK_AS_GHOST"];
+        string[] ops = ["LOP_INSERT_ROWS", "LOP_DELETE_ROWS", "LOP_MODIFY_ROW", "LOP_MODIFY_COLUMNS"];
+        var keyed = keys.Where(k => data.Contains(k.Context) && ops.Contains(k.Operation) && !k.Compensation).ToList();
+        Assert.Equal(11, keyed.Count);   // un insert, neuf modify, un delete
+        Assert.All(keyed, k => Assert.NotNull(k.RowKey));
+        Assert.Single(keyed.Select(k => k.RowKey).Distinct());
+        Assert.Contains(keys, k => k.Context == "LCX_PFS");
+        Assert.All(keys.Where(k => k.Context == "LCX_PFS"), k => Assert.Null(k.RowKey));
+        Assert.Contains(keys, k => k.Compensation);
+        Assert.All(keys.Where(k => k.Compensation), k => Assert.Null(k.RowKey));
+    }
+
+    [Theory, MemberData(nameof(Versions))]
+    public async Task UnkeyedDataRecords_LeaveOutPfsRecordsAndCompensations(string version)
+    {
+        // KeyDecoder rejette déjà un LCX_PFS (pas de RowLog Contents 2) : le filtre de contexte se vérifie sur la requête elle-même.
+        var f = FixtureSet.Load(version, "modify");
+        var (schema, _) = f.ForTable("dbo.t");
+        await using var cache = await CacheAsync(f.Log);
+
+        var unkeyed = await new LogQuery(cache.Connection).GetUnkeyedDataRecordsAsync(schema.AllocUnitId);
+
+        Assert.Contains(f.Log, r => r.AllocUnitId == schema.AllocUnitId && r.Context == "LCX_PFS" && r.Operation == "LOP_MODIFY_ROW");
+        Assert.Equal(11, unkeyed.Count);
+        Assert.All(unkeyed, r => Assert.Contains(r.Context, new[] { "LCX_HEAP", "LCX_CLUSTERED", "LCX_MARK_AS_GHOST" }));
+        Assert.DoesNotContain(unkeyed, r => r.IsCompensation);
+    }
+
+    [Theory, MemberData(nameof(Versions))]
+    public async Task Modify_ChangesComeFromTheRebuiltRows(string version)
+    {
+        var f = FixtureSet.Load(version, "modify");
+        var mods = Modifies(f.ForTable("dbo.t").Records);
+        await using var cache = await CacheAsync(f.Log);
+
+        var x = await new DecodingService(cache, Lookup(f), false).InspectAsync(mods[0]);
+
+        Assert.Equal("id=1, a=10, b=abc, c=True, d=False", Values(x.Before));
+        var changed = Assert.Single(x.Changes, c => c.Changed);
+        Assert.Equal(new ColumnChange("a", 10, 11, true), changed);
+        Assert.Equal(5, x.Changes.Count);
+    }
+
+    [Theory, MemberData(nameof(Versions))]
+    public async Task Modify_RolledBackAndSavepointTransactions(string version)
+    {
+        var f = FixtureSet.Load(version, "modify");
+        var mods = Modifies(f.ForTable("dbo.t").Records);
+        await using var cache = await CacheAsync(f.Log);
+        var service = new DecodingService(cache, Lookup(f), false);
+
+        var rolledBack = await service.InspectAsync(mods[6]);
+        Assert.Equal(TxOutcome.RolledBack, rolledBack.Outcome);
+        Assert.Equal("id=1, a=99, b=zz, c=True, d=True", Values(rolledBack.After));
+
+        foreach (var m in mods.Skip(7))
+        {
+            var x = await service.InspectAsync(m);
+            Assert.Equal($"partial rollback at LSN {mods[7].Lsn}, not replayed", x.ReplayStatus);
+            Assert.Equal(TxOutcome.PartlyRolledBack, x.Outcome);
+            Assert.Null(x.After);
+        }
+    }
+
+    [Theory, MemberData(nameof(Versions))]
+    public async Task Modify_ImportedTwice_ChangesNoResult(string version)
+    {
+        var f = FixtureSet.Load(version, "modify");
+        var mods = Modifies(f.ForTable("dbo.t").Records);
+        await using var once = await CacheAsync(f.Log);
+        await using var twice = await CacheAsync(f.Log, f.Log);
+        var a = new DecodingService(once, Lookup(f), false);
+        var b = new DecodingService(twice, Lookup(f), false);
+
+        foreach (var m in mods)
+        {
+            var x = await a.InspectAsync(m);
+            await twice.InsertBatchAsync(f.Log);   // un import qui recouvre le précédent, entre deux inspections
+            var y = await b.InspectAsync(m);
+            Assert.Equal(x.ReplayStatus, y.ReplayStatus);
+            Assert.Equal(Values(x.After), Values(y.After));
+            Assert.Equal(x.Outcome, y.Outcome);
+        }
+    }
+
+    [Theory, MemberData(nameof(Versions))]
+    public async Task Modify_RecordsAddedAfterAFirstInspection_AreKeyedToo(string version)
+    {
+        var f = FixtureSet.Load(version, "modify");
+        var mods = Modifies(f.ForTable("dbo.t").Records);
+        var cut = mods[0].Lsn;
+        var first = f.Log.Where(r => string.CompareOrdinal(r.Lsn, cut) <= 0).ToList();
+        var rest = f.Log.Where(r => string.CompareOrdinal(r.Lsn, cut) > 0).ToList();
+        await using var cache = await CacheAsync(first);
+        var service = new DecodingService(cache, Lookup(f), false);
+
+        Assert.Equal(ExpectedT[0], Values((await service.InspectAsync(mods[0])).After));
+        await cache.InsertBatchAsync(rest);
+        var later = await service.InspectAsync(mods[5]);
+
+        Assert.Equal(ExpectedT[5], Values(later.After));
+    }
+
+    // ---- modify : dbo.s, des slots déplacés ----
+
+    [Theory, MemberData(nameof(Versions))]
+    public async Task Modify_KeyedChainIgnoresSlotsShiftedByAnotherInsert(string version)
+    {
+        // id = 0 inséré après 1 et 2 décale leurs slots : l'adresse du modify de id = 1 est celle où id = 2 a été inséré.
+        var f = FixtureSet.Load(version, "modify");
+        var (_, records) = f.ForTable("dbo.s");
+        var update = Assert.Single(Modifies(records));
+        await using var cache = await CacheAsync(f.Log);
+
+        var x = await new DecodingService(cache, Lookup(f), false).InspectAsync(update);
+
+        Assert.Equal("id=1, a=11", Values(x.After));
+        Assert.Equal("id=1, a=10", Values(x.Before));
+    }
+
+    // ---- sans schéma ----
+
+    [Theory, MemberData(nameof(Versions))]
+    public async Task NoSchemaConnection_SaysSoWithoutThrowing(string version)
+    {
+        var f = FixtureSet.Load(version, "modify");
+        var records = f.ForTable("dbo.t").Records;
+        await using var cache = await CacheAsync(f.Log);
+        var service = new DecodingService(cache, null, isLive: true);
+
+        var x = await service.InspectAsync(Modifies(records)[0]);
+        var insert = await service.InspectAsync(records.First(r => r.Operation == "LOP_INSERT_ROWS"));
+
+        Assert.Null(x.Row);
+        Assert.Null(x.Before);
+        Assert.Null(x.After);
+        Assert.Equal("a schema connection is required", x.SchemaMessage);
+        Assert.Equal(TxOutcome.Committed, x.Outcome);
+        Assert.False(x.CanRebuildFromCurrentRow);
+        Assert.Equal("a schema connection is required", insert.SchemaMessage);
+        Assert.NotNull(insert.Row);
+        Assert.Empty(insert.Row!.Columns);
+    }
+
+    [Theory, MemberData(nameof(Versions))]
+    public async Task AllocationUnitUnknownToTheSchema_DecodesTheInsertWithoutColumns(string version)
+    {
+        var f = FixtureSet.Load(version, "modify");
+        var records = f.ForTable("dbo.t").Records;
+        await using var cache = await CacheAsync(f.Log);
+        var service = new DecodingService(cache, (_, _) => Task.FromResult<TableSchema?>(null), false);
+
+        var insert = await service.InspectAsync(records.First(r => r.Operation == "LOP_INSERT_ROWS"));
+        var modify = await service.InspectAsync(Modifies(records)[0]);
+
+        Assert.Equal("allocation unit not found in the connected database", insert.SchemaMessage);
+        Assert.NotNull(insert.Row);
+        Assert.Empty(insert.Row!.Columns);
+        Assert.Contains(insert.Row.Fields, x => x.Role == FieldRole.FixedEnd);
+        Assert.Equal("allocation unit not found in the connected database", modify.SchemaMessage);
+        Assert.Null(modify.Row);
+        Assert.Null(modify.Before);
+        Assert.Null(modify.After);
+        Assert.Empty(modify.Changes);
+    }
+
+    // ---- schema_change : reconstruction d'index ----
+
+    [Theory, MemberData(nameof(Versions))]
+    public async Task IndexRebuild_StartsANewChain(string version)
+    {
+        var f = FixtureSet.Load(version, "schema_change");
+        var (schema, records) = f.ForTable("dbo.rb");
+        var update = Assert.Single(Modifies(records));
+        var oldInsert = f.Log.Single(r => r.Operation == "LOP_INSERT_ROWS" && r.Context == "LCX_CLUSTERED"
+            && r.AllocUnitId != schema.AllocUnitId && f.Schemas.TryGetValue(r.AllocUnitId!.Value, out var s) && s.TableName == "rb");
+        await using var cache = await CacheAsync(f.Log);
+        var offline = new DecodingService(cache, Lookup(f), false);
+        var live = new DecodingService(cache, Lookup(f), true);
+
+        var x = await offline.InspectAsync(update);
+        var chain = await offline.GetRowChainAsync(update);
+
+        Assert.Equal(NoImage, x.ReplayStatus);
+        Assert.DoesNotContain(chain, r => r.Lsn == oldInsert.Lsn);
+        Assert.Contains(chain, r => r.Lsn == update.Lsn);
+        Assert.False(x.CanRebuildFromCurrentRow);
+        Assert.True((await live.InspectAsync(update)).CanRebuildFromCurrentRow);
+        // Sans rejeu, le fragment seul : un octet dans l'entier v (spec03 §6.1).
+        var v = Assert.Single(x.Changes);
+        Assert.Equal("v", v.Column);
+        Assert.True(v.Changed);
+    }
+
+    // ---- keys : enregistrement d'index non clustered ----
+
+    [Theory, MemberData(nameof(Versions))]
+    public async Task NonclusteredIndexDelete_IsNotDecodedAsARow(string version)
+    {
+        var f = FixtureSet.Load(version, "keys");
+        await using var cache = await CacheAsync(f.Log);
+        var service = new DecodingService(cache, Lookup(f), false);
+        var deletes = f.Log.Where(r => r.Operation == "LOP_DELETE_ROWS" && r.AllocUnitName?.StartsWith("dbo.ix.") == true).ToList();
+        var onIndex = deletes.Single(r => f.Schemas[r.AllocUnitId!.Value].IndexId == 2);
+        var onTable = deletes.Single(r => f.Schemas[r.AllocUnitId!.Value].IndexId == 1);
+
+        var x = await service.InspectAsync(onIndex);
+        var y = await service.InspectAsync(onTable);
+
+        Assert.NotNull(x.Row);
+        Assert.Empty(x.Row!.Columns);
+        Assert.Equal("id=1, a=100, name=alice", Values(y.Row));
+    }
+
+    [Theory, MemberData(nameof(Versions))]
+    public async Task Admission_ChecksTheAllocationUnit_NotOnlyTheRecordType(string version)
+    {
+        // Synthétique : l'enregistrement d'index ci-dessus est de type 3, que RowDecoder écarte de lui-même ; ici une ligne primaire (type 0)
+        // servie avec le schéma d'un index non clustered, pour que seule la vérification IsDataRows la tienne à l'écart (spec03 §5).
+        var f = FixtureSet.Load(version, "keys");
+        var onTable = f.Log.Single(r => r.Operation == "LOP_DELETE_ROWS" && r.AllocUnitName?.StartsWith("dbo.ix.") == true
+                                        && f.Schemas[r.AllocUnitId!.Value].IndexId == 1);
+        var asIndex = f.Schemas[onTable.AllocUnitId!.Value] with { IndexId = 2 };
+        await using var cache = await CacheAsync(f.Log);
+
+        var x = await new DecodingService(cache, (_, _) => Task.FromResult<TableSchema?>(asIndex), false).InspectAsync(onTable);
+
+        Assert.NotNull(x.Row);
+        Assert.Equal(0, x.Row!.RecordType);
+        Assert.Empty(x.Row.Columns);
+    }
+
+    // ---- heap ----
+
+    [Theory, MemberData(nameof(Versions))]
+    public async Task Heap_UpdateRebuildsFromItsInsert_AndTheSlotReuseIsAnotherRow(string version)
+    {
+        var f = FixtureSet.Load(version, "heap");
+        var (_, records) = f.ForTable("dbo.h");
+        var insert1 = records.First(r => r.Operation == "LOP_INSERT_ROWS");
+        var update = Modifies(records).First();
+        var insert2 = records.First(r => r.Operation == "LOP_INSERT_ROWS" && r.PageId == insert1.PageId && r.SlotId == insert1.SlotId
+                                         && string.CompareOrdinal(r.Lsn, update.Lsn) > 0);
+        await using var cache = await CacheAsync(f.Log);
+        var service = new DecodingService(cache, Lookup(f), true);
+
+        var x = await service.InspectAsync(update);
+        var chain = await service.GetRowChainAsync(update);
+
+        Assert.Equal(1, Value(x.After, "id"));
+        Assert.Equal(11, Value(x.After, "v"));
+        Assert.Equal(10, Value(x.Before, "v"));
+        Assert.Equal($"rebuilt forwards from INSERT at LSN {insert1.Lsn}", x.ReplayStatus);
+        Assert.False(x.CanRebuildFromCurrentRow);
+        Assert.Contains(chain, r => r.Lsn == insert1.Lsn);
+        Assert.DoesNotContain(chain, r => r.Lsn == insert2.Lsn);
+    }
+
+    [Theory, MemberData(nameof(Versions))]
+    public async Task Heap_ForwardedRow_IsNotFollowed(string version)
+    {
+        var f = FixtureSet.Load(version, "heap");
+        var (_, records) = f.ForTable("dbo.h");
+        // id = 101 : le modify dont l'après est un talon de renvoi (type 2).
+        var update = Modifies(records).Single(r => r.RowLogContents1 is { Length: > 0 } after && (after[0] >> 1 & 7) == 2);
+        await using var cache = await CacheAsync(f.Log);
+
+        var x = await new DecodingService(cache, Lookup(f), false).InspectAsync(update);
+
+        Assert.Equal("row forwarded, not followed", x.ReplayStatus);
+    }
+
+    [Theory, MemberData(nameof(Versions))]
+    public async Task Heap_WithoutAnImage_CannotUseTheCurrentRow(string version)
+    {
+        var f = FixtureSet.Load(version, "heap");
+        var (_, records) = f.ForTable("dbo.h");
+        var insert1 = records.First(r => r.Operation == "LOP_INSERT_ROWS");
+        var update = Modifies(records).First();
+        // Ni l'insert ni le delete de la ligne : aucune des deux ancres du cache.
+        var delete1 = records.First(r => r.Operation == "LOP_DELETE_ROWS");
+        await using var cache = await CacheAsync(f.Log.Where(r => r.Lsn != insert1.Lsn && r.Lsn != delete1.Lsn).ToList());
+
+        var x = await new DecodingService(cache, Lookup(f), true).InspectAsync(update);
+
+        Assert.Equal(NoImage, x.ReplayStatus);
+        Assert.False(x.CanRebuildFromCurrentRow);
+    }
+
+    // ---- split ----
+
+    [Theory, MemberData(nameof(Versions))]
+    public async Task Split_UpdateAfterTheSplitIsRebuilt_AndTheMovedRowsAreLabelled(string version)
+    {
+        var f = FixtureSet.Load(version, "split");
+        var (_, records) = f.ForTable("dbo.sp");
+        var update = Assert.Single(Modifies(records));
+        var splits = f.Log.Where(r => r.Operation == "LOP_BEGIN_XACT" && r.TransactionName == "SplitPage").Select(r => r.TransactionId).ToHashSet();
+        var moved = records.Single(r => r.Operation == "LOP_INSERT_ROWS" && splits.Contains(r.TransactionId));
+        var plain = records.First(r => r.Operation == "LOP_INSERT_ROWS");
+        await using var cache = await CacheAsync(f.Log);
+        var service = new DecodingService(cache, Lookup(f), false);
+
+        var x = await service.InspectAsync(update);
+
+        Assert.StartsWith("rebuilt", x.ReplayStatus);
+        Assert.Equal(4, Value(x.After, "id"));
+        Assert.Equal(40, Value(x.After, "a"));
+        Assert.Equal(2, Value(x.Before, "a"));
+        Assert.Equal("row moved by the engine", (await service.InspectAsync(moved)).Label);
+        Assert.Null((await service.InspectAsync(plain)).Label);
+    }
+
+    // ---- versioned_adr ----
+
+    [Theory, MemberData(nameof(AdrVersions))]
+    public async Task VersionedAdr_DeleteImageCarriesTheWarning(string version)
+    {
+        var f = FixtureSet.Load(version, "versioned_adr");
+        var (_, records) = f.ForTable("dbo.vr");
+        var delete = records.Single(r => r.Operation == "LOP_DELETE_ROWS");
+        var insert = records.Single(r => r.Operation == "LOP_INSERT_ROWS");
+        await using var cache = await CacheAsync(f.Log);
+        var service = new DecodingService(cache, Lookup(f), false);
+
+        var x = await service.InspectAsync(delete);
+
+        Assert.Equal("may hold values undone by a partial rollback", x.Warning);
+        Assert.Equal(1, Value(x.Row, "id"));
+        // L'insert précède la révocation : son image ne peut rien en tenir.
+        Assert.Null((await service.InspectAsync(insert)).Warning);
+    }
+
+    [Theory, MemberData(nameof(Versions))]
+    public async Task PlainDelete_HasNoWarning(string version)
+    {
+        var f = FixtureSet.Load(version, "modify");
+        var delete = f.ForTable("dbo.t").Records.Single(r => r.Operation == "LOP_DELETE_ROWS");
+        await using var cache = await CacheAsync(f.Log);
+
+        var x = await new DecodingService(cache, Lookup(f), false).InspectAsync(delete);
+
+        Assert.Null(x.Warning);
+        Assert.Equal("id=1, a=21, b=zz, c=True, d=True", Values(x.Row));
+        Assert.Equal(TxOutcome.Committed, x.Outcome);
+    }
+}
