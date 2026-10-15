@@ -145,5 +145,85 @@ public class InspectorViewModelTests
         Assert.Equal(privileged, !vm.StatusMessage!.StartsWith("Warning"));
     }
 
+    // ---- Valeur inconnue et NULL SQL : une cellule vide n'est pas un NULL (spec03 §6.1, §9) ----
+
+    [Fact]
+    public async Task FragmentOnlyModify_LeavesUnknownValuesBlank()
+    {
+        var f = FixtureSet.Load("2022", "modify");
+        await using var cache = await CacheAsync(f);
+        var vm = new InspectorViewModel(new DecodingService(cache, Lookup(f), isLive: false), null);
+        // Compensation : le fragment n'a pas d'avant, la colonne a est nommée sans valeurs.
+        var compensation = f.Log.Single(r => r.Lsn == "0000002A:000001E8:0003");
+
+        await vm.InspectAsync(compensation);
+
+        var a = Assert.Single(vm.Values, v => v.Column == "a");
+        Assert.True(a.Changed);
+        Assert.Equal("", InspectorViewModel.ValueText(a.Before));
+        Assert.Equal("", InspectorViewModel.ValueText(a.After));
+    }
+
+    [Fact]
+    public async Task Insert_LeavesBeforeBlank_AndARebuiltNullShowsNull()
+    {
+        var f = FixtureSet.Load("2022", "modify");
+        await using var cache = await CacheAsync(f);
+        var vm = new InspectorViewModel(new DecodingService(cache, Lookup(f), isLive: false), null);
+        var records = f.ForTable("dbo.t").Records;
+
+        await vm.InspectAsync(records.First(r => r.Operation == "LOP_INSERT_ROWS"));
+
+        Assert.All(vm.Values, v => Assert.Equal("", InspectorViewModel.ValueText(v.Before)));
+        Assert.Equal("10", InspectorViewModel.ValueText(vm.Values.Single(v => v.Column == "a").After));
+
+        // modify.sql : b = NULL, cinquième modify de dbo.t, rejoué depuis l'insert.
+        var mods = records.Where(r => r.Operation is "LOP_MODIFY_ROW" or "LOP_MODIFY_COLUMNS" && !r.IsCompensation).ToList();
+        await vm.InspectAsync(mods[4]);
+
+        var b = vm.Values.Single(v => v.Column == "b");
+        Assert.StartsWith("rebuilt", vm.ReplayStatus);
+        Assert.Equal("abcdef", InspectorViewModel.ValueText(b.Before));
+        Assert.Equal("NULL", InspectorViewModel.ValueText(b.After));
+    }
+
+    [Fact]
+    public async Task ASlowInspection_DoesNotOverwriteANewerSelection()
+    {
+        var f = FixtureSet.Load("2022", "modify");
+        await using var cache = await CacheAsync(f);
+        var gate = new TaskCompletionSource();
+        var calls = 0;
+        Func<long, CancellationToken, Task<TableSchema?>> lookup = async (au, _) =>
+        {
+            if (Interlocked.Increment(ref calls) == 1) await gate.Task;   // seule la première recherche attend
+            return f.Schemas.TryGetValue(au, out var s) ? s : null;
+        };
+        var vm = new InspectorViewModel(new DecodingService(cache, lookup, isLive: false), null);
+        var insert = f.ForTable("dbo.t").Records.First(r => r.Operation == "LOP_INSERT_ROWS");
+
+        var slow = vm.InspectAsync(FirstModify(f));
+        await vm.InspectAsync(insert);
+        gate.SetResult();
+        await slow;
+
+        Assert.Equal($"LOP_INSERT_ROWS at {insert.Lsn}, transaction committed", vm.Title);
+        Assert.Null(vm.ReplayStatus);
+        Assert.Contains(vm.Bytes, b => b.Role is not null);
+    }
+
+    [Fact]
+    public async Task EmptyImage_HasNoNotePointingAtBytes()
+    {
+        var f = FixtureSet.Load("2022", "modify");
+        await using var cache = await CacheAsync(f);
+        var vm = new InspectorViewModel(new DecodingService(cache, null, isLive: false), null);
+
+        await vm.InspectAsync(f.Log.Single(r => r.Lsn == "0000002A:00000260:0003"));
+
+        Assert.Empty(vm.Bytes);
+        Assert.True(vm.Notes is null || !vm.Notes.Contains("Bytes"), vm.Notes);
+    }
+
     private static string Hex(byte[] bytes) => Convert.ToHexString(bytes);
 }

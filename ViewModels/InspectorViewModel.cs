@@ -119,17 +119,20 @@ public sealed partial class InspectorViewModel : ViewModelBase
         Notes = string.Join("; ", new[]
         {
             x.Label, x.Warning, x.IncludesUnknownOutcome ? "includes changes of unknown outcome" : null,
-            x.Row?.HasProblem == true ? "the row image has problems, see Bytes" : null,
+            x.Row?.HasProblem == true && record.RowLogContents0 is { Length: > 0 } ? "the row image has problems, see Bytes" : null,
         }.Where(s => s is not null)) is { Length: > 0 } n ? n : null;
         CanRebuildFromCurrentRow = canRebuild;
 
         Values.Clear();
-        // Un insert montre la ligne après, un delete la ligne avant ; un modify, ses colonnes avant et après.
+        // Un insert montre la ligne après, un delete la ligne avant, l'autre côté reste vide ; un modify, ses colonnes avant et après.
+        // Sans lignes reconstruites, les valeurs viennent du fragment seul : null y veut dire inconnu, pas NULL (spec03 §6.1).
         if (x.Row is { } row && x.SchemaMessage is null)
             foreach (var c in row.Columns)
-                Values.Add(record.Operation == "LOP_DELETE_ROWS" ? new ColumnChange(c.Name, c.Value, null, false) : new ColumnChange(c.Name, null, c.Value, false));
-        else
+                Values.Add(record.Operation == "LOP_DELETE_ROWS" ? new ColumnChange(c.Name, c.Value, Unknown, false) : new ColumnChange(c.Name, Unknown, c.Value, false));
+        else if (x.Before is not null && x.After is not null)
             foreach (var c in x.Changes) Values.Add(c);
+        else
+            foreach (var c in x.Changes) Values.Add(c with { Before = c.Before ?? Unknown, After = c.After ?? Unknown });
 
         Bytes.Clear();
         FillBytes(record, x.Row);
@@ -169,9 +172,13 @@ public sealed partial class InspectorViewModel : ViewModelBase
         return string.Join(Environment.NewLine, lines);
     }
 
-    /// <summary>Texte d'une valeur décodée : NULL SQL, binaire en hex, le reste en culture invariante.</summary>
+    /// <summary>Valeur absente ou inconnue (l'autre côté d'un insert ou d'un delete, un fragment qui ne couvre pas la colonne) : cellule vide.</summary>
+    public static readonly object Unknown = new();
+
+    /// <summary>Texte d'une valeur décodée : vide si inconnue, NULL SQL, binaire en hex, le reste en culture invariante.</summary>
     public static string ValueText(object? value) => value switch
     {
+        _ when ReferenceEquals(value, Unknown) => "",
         null => "NULL",
         byte[] b => "0x" + Convert.ToHexString(b),
         _ => Convert.ToString(value, CultureInfo.InvariantCulture) ?? "",
