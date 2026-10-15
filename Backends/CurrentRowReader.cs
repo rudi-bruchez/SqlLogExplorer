@@ -23,10 +23,16 @@ public sealed partial class CurrentRowReader
     public const string NotThisRow = "current row is not this row";
     public const string Truncated = "log truncated since the import, re-import to use the current row";
     public const string Deleted = "row deleted since: the DELETE anchor applies";
+    public const string NotSendable = "key value cannot be sent in the database code page";
 
     private readonly string _connectionString;
+    private int? _databaseCodePage;
 
     public CurrentRowReader(string connectionString) => _connectionString = connectionString;   // chaîne vers la base analysée
+
+    /// <summary>La lecture se fait hors pool : SERIALIZABLE resterait sur la session rendue au pool (sp_reset_connection ne remet pas
+    /// le niveau d'isolation, mesuré sur 2017 et 2022), et toute connexion suivante de l'application sur la base en hériterait.</summary>
+    private string ReadConnectionString => new SqlConnectionStringBuilder(_connectionString) { Pooling = false }.ConnectionString;
 
     /// <summary>false quand la base a l'ADR : la page peut porter des octets annulés (spec03 §2). La colonne n'existe pas avant 2019.</summary>
     public async Task<bool> IsAvailableForDatabaseAsync(CancellationToken ct = default)
@@ -46,12 +52,21 @@ public sealed partial class CurrentRowReader
     public async Task<CurrentRowResult> ReadAsync(TableSchema schema, IReadOnlyList<(SchemaColumn Column, object? Value)> key,
         string lastCachedLsn, Func<IReadOnlyList<LogRecord>, CancellationToken, Task<bool>> acceptSuffix, CancellationToken ct = default)
     {
-        await using var cn = new SqlConnection(_connectionString);
+        await using var cn = new SqlConnection(ReadConnectionString);
         await cn.OpenAsync(ct);
         await using (var set = cn.CreateCommand())
         {
             set.CommandText = "SET LOCK_TIMEOUT 5000;";
             await set.ExecuteNonQueryAsync(ct);
+        }
+
+        // Un paramètre varchar part dans la page de code par défaut de la base : une clé qui n'y passe pas deviendrait « ??? »
+        // et viserait une autre ligne. Rien n'est cherché dans ce cas.
+        if (key.Any(k => k.Column.SystemTypeId is 175 or 167 && k.Value is string))
+        {
+            _databaseCodePage ??= await DatabaseCodePageAsync(cn, ct);
+            if (key.Any(k => k.Column.SystemTypeId is 175 or 167 && k.Value is string v && !Sendable(v, k.Column.CodePage, _databaseCodePage.Value)))
+                return new CurrentRowResult(null, NotSendable);
         }
         await using var tx = (SqlTransaction)await cn.BeginTransactionAsync(IsolationLevel.Serializable, ct);
 
@@ -115,6 +130,24 @@ public sealed partial class CurrentRowReader
             if (KeyMatches(row, schema, key)) return new CurrentRowResult(row, null);
         }
         return new CurrentRowResult(null, NotThisRow);
+    }
+
+    private static async Task<int> DatabaseCodePageAsync(SqlConnection cn, CancellationToken ct)
+    {
+        await using var cmd = cn.CreateCommand();
+        cmd.CommandText = "SELECT CONVERT(int, COLLATIONPROPERTY(CONVERT(sysname, DATABASEPROPERTYEX(DB_NAME(), 'Collation')), 'CodePage'));";
+        return Convert.ToInt32(await cmd.ExecuteScalarAsync(ct));
+    }
+
+    /// <summary>Même page de code que la colonne : la valeur en vient. Sinon, la valeur doit faire l'aller-retour par la page de la base.</summary>
+    internal static bool Sendable(string value, int? columnCodePage, int databaseCodePage)
+    {
+        if (columnCodePage == databaseCodePage) return true;
+        Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
+        Encoding encoding;
+        try { encoding = Encoding.GetEncoding(databaseCodePage); }
+        catch (Exception e) when (e is ArgumentException or NotSupportedException) { return false; }
+        return encoding.GetString(encoding.GetBytes(value)) == value;
     }
 
     private static InvalidOperationException StepFailed(string step, SqlException e) =>

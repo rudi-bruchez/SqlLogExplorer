@@ -182,18 +182,33 @@ public class CurrentRowReaderIntegrationTests
         await using var holder = new SqlConnection(db.ConnectionString);
         await holder.OpenAsync();
         var tx = (SqlTransaction)await holder.BeginTransactionAsync();
+        short spid;
         await using (var cmd = holder.CreateCommand())
         {
             cmd.Transaction = tx;
-            cmd.CommandText = "UPDATE dbo.t SET a = 11 WHERE id = 1;";
-            await cmd.ExecuteNonQueryAsync();
+            cmd.CommandText = "UPDATE dbo.t SET a = 11 WHERE id = 1; SELECT CONVERT(smallint, @@SPID);";
+            spid = (short)(await cmd.ExecuteScalarAsync())!;
         }
-        var commit = Task.Run(async () => { await Task.Delay(1500); await tx.CommitAsync(); });
+        // Valider seulement quand la recherche est vue bloquée par l'écrivain : ni trop tôt (test vide), ni après le délai de 5 s.
+        var commit = Task.Run(async () =>
+        {
+            for (var i = 0; i < 400; i++)
+            {
+                if (Convert.ToInt32(await db.ScalarAsync($"SELECT COUNT(*) FROM sys.dm_exec_requests WHERE blocking_session_id = {spid};")) > 0)
+                {
+                    await tx.CommitAsync();
+                    return true;
+                }
+                await Task.Delay(10);
+            }
+            await tx.CommitAsync();
+            return false;
+        });
 
         IReadOnlyList<LogRecord> suffix = [];
         var result = await new CurrentRowReader(db.ConnectionString).ReadAsync(schema, [(id, 1)], last,
             (r, ct) => { suffix = r; return Task.FromResult(true); });
-        await commit;
+        Assert.True(await commit, "la recherche n'a jamais été vue bloquée par l'écrivain");
 
         Assert.Null(result.Unavailable);
         var modify = Assert.Single(suffix, r => r.AllocUnitId == au && r.Operation == "LOP_MODIFY_ROW");
@@ -332,5 +347,54 @@ public class CurrentRowReaderIntegrationTests
 
         Assert.Equal(FromCurrentRow, x.ReplayStatus);
         Assert.Equal("id=1, a=10", Values(x.Before));
+    }
+
+    [IntegrationFact]
+    public async Task ThePoolDoesNotInheritSerializable()
+    {
+        // Un nom d'application propre au test : le pool de cette chaîne ne contient que ce que la lecture y aurait rendu.
+        await using var db = await Database.CreateAsync();
+        await db.ExecAsync("CREATE TABLE dbo.t(id int NOT NULL PRIMARY KEY, a int NULL); INSERT dbo.t VALUES (1, 10);");
+        var cs = new SqlConnectionStringBuilder(db.ConnectionString) { ApplicationName = "sle-pool-" + Guid.NewGuid().ToString("N") }.ConnectionString;
+        var schema = (await new SchemaProvider(cs).GetAsync(await db.AllocUnitAsync("dbo.t")))!;
+        var id = schema.Columns.Single(c => c.Name == "id");
+
+        var result = await new CurrentRowReader(cs).ReadAsync(schema, [(id, 1)], await db.LastLsnAsync(), Accept);
+        Assert.Null(result.Unavailable);
+
+        await using var next = new SqlConnection(cs);
+        await next.OpenAsync();
+        await using var cmd = next.CreateCommand();
+        cmd.CommandText = "SELECT transaction_isolation_level FROM sys.dm_exec_sessions WHERE session_id = @@SPID;";
+        Assert.Equal(2, Convert.ToInt32(await cmd.ExecuteScalarAsync()));   // READ COMMITTED
+    }
+
+    [IntegrationFact]
+    public async Task AVarcharKeyOutsideTheDatabaseCodePage_IsNotSought()
+    {
+        // Base en SQL_Latin1_General_CP1_CI_AS (1252) : une clé grecque ou UTF-8 deviendrait « ??? » dans un paramètre varchar.
+        await using var db = await Database.CreateAsync();
+        await db.ExecAsync("""
+            CREATE TABLE dbo.g(k varchar(10) COLLATE Greek_CI_AS NOT NULL PRIMARY KEY, a int NULL);
+            CREATE TABLE dbo.u8(k varchar(10) COLLATE Latin1_General_100_CI_AS_SC_UTF8 NOT NULL PRIMARY KEY, a int NULL);
+            CREATE TABLE dbo.ga(k varchar(10) COLLATE Greek_CI_AS NOT NULL PRIMARY KEY, a int NULL);
+            INSERT dbo.g VALUES (N'αβγ', 10), ('???', 10);
+            INSERT dbo.u8 VALUES (N'жё', 10);
+            INSERT dbo.ga VALUES ('abc', 10);
+            """);
+
+        foreach (var (table, update) in new[] { ("dbo.g", "UPDATE dbo.g SET a = 11 WHERE k = N'αβγ';"), ("dbo.u8", "UPDATE dbo.u8 SET a = 11 WHERE k = N'жё';") })
+        {
+            await using var s = await ImportAfterInsertAsync(db, table, update);
+            var x = await s.Service.RebuildFromCurrentRowAsync(s.Selected, new CurrentRowReader(db.ConnectionString));
+            Assert.Equal("key value cannot be sent in the database code page", x.ReplayStatus);
+            Assert.Null(x.Before);
+        }
+
+        // Témoin : une clé ASCII d'une colonne grecque passe par la page de la base et se retrouve.
+        await using var ok = await ImportAfterInsertAsync(db, "dbo.ga", "UPDATE dbo.ga SET a = 11 WHERE k = 'abc';");
+        var y = await ok.Service.RebuildFromCurrentRowAsync(ok.Selected, new CurrentRowReader(db.ConnectionString));
+        Assert.Equal(FromCurrentRow, y.ReplayStatus);
+        Assert.Equal("k=abc, a=10", Values(y.Before));
     }
 }
