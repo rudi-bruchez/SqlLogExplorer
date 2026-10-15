@@ -158,7 +158,7 @@ public sealed class LogCache : IAsyncDisposable, IDisposable
         cmd.Prepare();
         foreach (var (lsn, key) in keys)
         {
-            pLsn.Value = lsn;
+            pLsn.Value = Lsn.Normalize(lsn);
             pKey.Value = (object?)key ?? DBNull.Value;
             cmd.ExecuteNonQuery();
         }

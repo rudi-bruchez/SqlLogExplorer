@@ -23,6 +23,77 @@ public class LogColumnsIntegrationTests
         return list;
     }
 
+    private sealed record Plain(long? AllocUnitId, long? PartitionId, string? PageId, int? SlotId, int? OffsetInRow,
+        int? ModifySize, int? NumElements, string? Description, string? TransactionName,
+        byte[]? Rlc0, byte[]? Rlc1, byte[]? Rlc2, byte[]? Rlc3, byte[]? Rlc4, byte[]? Rlc5);
+
+    /// <summary>Relecture indépendante, colonnes lues par nom, pour épingler le mappage de LogColumns.Read.</summary>
+    private static async Task<Dictionary<string, Plain>> ReadPlainAsync(string connectionString)
+    {
+        var map = new Dictionary<string, Plain>();
+        await using var cn = new SqlConnection(connectionString);
+        await cn.OpenAsync();
+        await using var cmd = cn.CreateCommand();
+        cmd.CommandText = """
+            SELECT [Current LSN], [AllocUnitId], [PartitionId], [Page ID], [Slot ID], [Offset in Row], [Modify Size],
+                   [Num Elements], [Description], [Transaction Name],
+                   [RowLog Contents 0], [RowLog Contents 1], [RowLog Contents 2], [RowLog Contents 3],
+                   [RowLog Contents 4], [RowLog Contents 5]
+            FROM sys.fn_dblog(NULL, NULL);
+            """;
+        await using var r = await cmd.ExecuteReaderAsync();
+        long? L(string n) => r[n] is DBNull ? null : Convert.ToInt64(r[n]);
+        int? I(string n) => r[n] is DBNull ? null : Convert.ToInt32(r[n]);
+        string? T(string n) => r[n] is DBNull ? null : (string)r[n];
+        byte[]? B(string n) => r[n] is DBNull ? null : (byte[])r[n];
+        while (await r.ReadAsync())
+            map[Lsn.Normalize((string)r["Current LSN"])] = new Plain(L("AllocUnitId"), L("PartitionId"), T("Page ID"),
+                I("Slot ID"), I("Offset in Row"), I("Modify Size"), I("Num Elements"), T("Description"), T("Transaction Name"),
+                B("RowLog Contents 0"), B("RowLog Contents 1"), B("RowLog Contents 2"), B("RowLog Contents 3"),
+                B("RowLog Contents 4"), B("RowLog Contents 5"));
+        return map;
+    }
+
+    private static void AssertMatchesPlain(IReadOnlyList<LogRecord> records, Dictionary<string, Plain> plain)
+    {
+        static void Bytes(byte[]? e, byte[]? a, string what)
+        {
+            if (e is null) Assert.True(a is null, what);
+            else Assert.True(a is not null && e.AsSpan().SequenceEqual(a), what);
+        }
+        foreach (var r in records)
+        {
+            var p = plain[r.Lsn];
+            var w = r.Lsn;
+            Assert.True(p.AllocUnitId == r.AllocUnitId, $"{w} AllocUnitId");
+            Assert.True(p.PartitionId == r.PartitionId, $"{w} PartitionId");
+            Assert.True(p.PageId == r.PageId, $"{w} PageId");
+            Assert.True(p.SlotId == r.SlotId, $"{w} SlotId");
+            Assert.True(p.OffsetInRow == r.OffsetInRow, $"{w} OffsetInRow");
+            Assert.True(p.ModifySize == r.ModifySize, $"{w} ModifySize");
+            Assert.True(p.NumElements == r.NumElements, $"{w} NumElements");
+            Assert.True(p.Description == r.Description, $"{w} Description");
+            Assert.True(p.TransactionName == r.TransactionName, $"{w} TransactionName");
+            Bytes(p.Rlc0, r.RowLogContents0, $"{w} RLC0"); Bytes(p.Rlc1, r.RowLogContents1, $"{w} RLC1");
+            Bytes(p.Rlc2, r.RowLogContents2, $"{w} RLC2"); Bytes(p.Rlc3, r.RowLogContents3, $"{w} RLC3");
+            Bytes(p.Rlc4, r.RowLogContents4, $"{w} RLC4"); Bytes(p.Rlc5, r.RowLogContents5, $"{w} RLC5");
+        }
+        // Au moins une ligne renseigne chaque champ nullable : un mappage « toujours null » ne passe pas.
+        Assert.Contains(records, r => r.AllocUnitId is not null);
+        Assert.Contains(records, r => r.PartitionId is not null);
+        Assert.Contains(records, r => r.PageId is not null);
+        Assert.Contains(records, r => r.SlotId is not null);
+        Assert.Contains(records, r => r.OffsetInRow is not null);
+        Assert.Contains(records, r => r.ModifySize is not null);
+        Assert.Contains(records, r => r.NumElements is not null);
+        Assert.Contains(records, r => r.Description is not null);
+        Assert.Contains(records, r => r.TransactionName is not null);
+        Assert.Contains(records, r => r.RowLogContents2 is not null);
+        Assert.Contains(records, r => r.RowLogContents3 is not null);
+        Assert.Contains(records, r => r.RowLogContents4 is not null);
+        Assert.Contains(records, r => r.RowLogContents5 is not null);
+    }
+
     [IntegrationFact]
     public async Task ParseLogAsync_ReadsReplayColumnsAndAcceptsLsnRange()
     {
@@ -39,6 +110,7 @@ public class LogColumnsIntegrationTests
                 "CREATE TABLE dbo.t(id int NOT NULL PRIMARY KEY, a int NULL); INSERT dbo.t VALUES (1, 10); UPDATE dbo.t SET a = 11 WHERE id = 1;");
 
             var all = await ReadAsync(new LiveDatabaseBackend(), dbConn);
+            AssertMatchesPlain(all, await ReadPlainAsync(dbConn));
 
             // Le brief ne filtrait que sur l'unité d'allocation : la table porte aussi deux LOP_MODIFY_ROW
             // aux offsets 340 (mise à jour de la page d'allocation), d'où le filtre sur l'offset de l'UPDATE.
@@ -59,6 +131,7 @@ public class LogColumnsIntegrationTests
             Assert.True((first + last).Any(char.IsLetter));
             var ranged = await ReadAsync(new LiveDatabaseBackend(new LsnRange(first, last)), dbConn);
             Assert.NotEmpty(ranged);
+            AssertMatchesPlain(ranged, await ReadPlainAsync(dbConn));
         }
         finally
         {

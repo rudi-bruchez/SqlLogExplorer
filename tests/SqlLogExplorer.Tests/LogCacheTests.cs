@@ -103,4 +103,17 @@ public class LogCacheTests
         cmd.CommandText = "SELECT RowKey FROM LogRecords;";
         Assert.Equal("V01000000;U0", (string?)await cmd.ExecuteScalarAsync());
     }
+
+    [Fact]
+    public async Task SetRowKeysAsync_NormalizesLowercaseLsn()
+    {
+        await using var cache = await LogCache.CreateAsync(TempDb());
+        await cache.InsertBatchAsync(new[] { new Models.LogRecord("0000002a:00000010:0004", "LOP_INSERT_ROWS", null, null, null, null, null) });
+
+        await cache.SetRowKeysAsync(new[] { ("0000002a:00000010:0004", (string?)"K1") });
+
+        await using var cmd = cache.Connection.CreateCommand();
+        cmd.CommandText = "SELECT RowKey FROM LogRecords;";
+        Assert.Equal("K1", (string?)await cmd.ExecuteScalarAsync());
+    }
 }
