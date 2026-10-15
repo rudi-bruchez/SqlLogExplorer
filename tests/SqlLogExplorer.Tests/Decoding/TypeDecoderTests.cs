@@ -76,7 +76,7 @@ public class TypeDecoderTests
     private static string Days16Hex1900(DateTime d) => Convert.ToHexString(BitConverter.GetBytes((ushort)(d.Date - new DateTime(1900, 1, 1)).TotalDays));
 
     // Valeurs de la première ligne de dbo.types (tests/fixtures/scenarios/types.sql).
-    private static readonly (string Column, object Expected)[] FirstRow =
+    internal static readonly (string Column, object Expected)[] FirstRow =
     [
         ("ti", (byte)200), ("si", (short)-12345), ("bi", 1234567890123L),
         ("d9", SqlDecimal.Parse("1234567.89")), ("d19", SqlDecimal.Parse("123456789012345.6789")),
