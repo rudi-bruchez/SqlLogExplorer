@@ -1,6 +1,9 @@
 <Window xmlns="https://github.com/avaloniaui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:vm="using:SqlLogExplorer.ViewModels"
+        xmlns:views="using:SqlLogExplorer.Views"
+        xmlns:models="using:SqlLogExplorer.Models"
+        xmlns:services="using:SqlLogExplorer.Services"
         xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         mc:Ignorable="d" d:DesignWidth="800" d:DesignHeight="450"
@@ -22,6 +25,9 @@
                 <TextBlock Text=" OR " VerticalAlignment="Center" FontWeight="Bold"/>
                 <Button Content="Connect (Live DB)…" Click="OnConnectLive"/>
                 <Button Content="Cancel" Command="{Binding CancelCommand}" IsVisible="{Binding IsLoading}"/>
+                <Button Content="Connect schema source…" Click="OnConnectSchemaSource"
+                        IsVisible="{Binding CanConnectSchemaSource}"
+                        ToolTip.Tip="Offline: read table schemas from a database to decode the rows"/>
             </StackPanel>
             <TextBlock Text="Requires sysadmin or VIEW SERVER STATE / db_owner on the target SQL Server."
                        FontStyle="Italic" Opacity="0.7"/>
@@ -32,6 +38,90 @@
         </StackPanel>
 
         <TabControl>
+            <TabItem Header="Records">
+                <Grid RowDefinitions="*,Auto,6,*">
+                    <DataGrid Grid.Row="0" ItemsSource="{Binding Records.Records}"
+                              SelectedItem="{Binding Records.SelectedRecord}"
+                              IsReadOnly="True" AutoGenerateColumns="False" SelectionMode="Single">
+                        <DataGrid.Columns>
+                            <DataGridTextColumn Header="LSN" Binding="{Binding Lsn}" x:DataType="models:LogRecord" Width="200"/>
+                            <DataGridTextColumn Header="Operation" Binding="{Binding Operation}" x:DataType="models:LogRecord" Width="180"/>
+                            <DataGridTextColumn Header="Context" Binding="{Binding Context}" x:DataType="models:LogRecord" Width="160"/>
+                            <DataGridTextColumn Header="AllocUnitName" Binding="{Binding AllocUnitName}" x:DataType="models:LogRecord" Width="*"/>
+                            <DataGridTextColumn Header="TransactionId" Binding="{Binding TransactionId}" x:DataType="models:LogRecord" Width="140"/>
+                        </DataGrid.Columns>
+                    </DataGrid>
+
+                    <StackPanel Grid.Row="1" Orientation="Horizontal" Spacing="8" Margin="0,6">
+                        <Button Content="Previous" Command="{Binding Records.PreviousPageCommand}"/>
+                        <TextBlock Text="{Binding Records.PageNumber, StringFormat='Page {0}'}" VerticalAlignment="Center"/>
+                        <Button Content="Next" Command="{Binding Records.NextPageCommand}"/>
+                    </StackPanel>
+
+                    <GridSplitter Grid.Row="2" ResizeDirection="Rows"/>
+
+                    <Panel Grid.Row="3" IsVisible="{Binding Inspector, Converter={x:Static ObjectConverters.IsNotNull}}">
+                    <DockPanel DataContext="{Binding Inspector}" x:DataType="vm:InspectorViewModel">
+                        <StackPanel DockPanel.Dock="Top" Spacing="4" Margin="0,6">
+                            <TextBlock Text="{Binding Title}" FontWeight="Bold"/>
+                            <StackPanel Orientation="Horizontal" Spacing="8">
+                                <TextBlock Text="{Binding ReplayStatus}" VerticalAlignment="Center"
+                                           IsVisible="{Binding ReplayStatus, Converter={x:Static StringConverters.IsNotNullOrEmpty}}"/>
+                                <Button Content="Rebuild from the current row" Command="{Binding RebuildFromCurrentRowCommand}"
+                                        IsVisible="{Binding CanRebuildFromCurrentRow}"/>
+                            </StackPanel>
+                            <TextBlock Text="{Binding Notes}" FontStyle="Italic" TextWrapping="Wrap"
+                                       IsVisible="{Binding Notes, Converter={x:Static StringConverters.IsNotNullOrEmpty}}"/>
+                            <TextBlock Text="{Binding Error}" Foreground="IndianRed" TextWrapping="Wrap"
+                                       IsVisible="{Binding Error, Converter={x:Static StringConverters.IsNotNullOrEmpty}}"/>
+                        </StackPanel>
+                        <TabControl>
+                            <TabItem Header="Values">
+                                <DockPanel>
+                                    <TextBlock DockPanel.Dock="Top" Text="{Binding SchemaMessage}" FontStyle="Italic" Margin="0,4"
+                                               IsVisible="{Binding SchemaMessage, Converter={x:Static StringConverters.IsNotNullOrEmpty}}"/>
+                                    <DataGrid ItemsSource="{Binding Values}" IsReadOnly="True" AutoGenerateColumns="False">
+                                        <DataGrid.Styles>
+                                            <Style Selector="DataGridRow" x:DataType="services:ColumnChange">
+                                                <Setter Property="Background"
+                                                        Value="{Binding Changed, Converter={x:Static views:InspectorConverters.ChangedBrush}}"/>
+                                            </Style>
+                                        </DataGrid.Styles>
+                                        <DataGrid.Columns>
+                                            <DataGridTextColumn Header="Column" Binding="{Binding Column}" x:DataType="services:ColumnChange" Width="200"/>
+                                            <DataGridTextColumn Header="Before" x:DataType="services:ColumnChange" Width="*"
+                                                                Binding="{Binding Before, Converter={x:Static views:InspectorConverters.Value}}"/>
+                                            <DataGridTextColumn Header="After" x:DataType="services:ColumnChange" Width="*"
+                                                                Binding="{Binding After, Converter={x:Static views:InspectorConverters.Value}}"/>
+                                        </DataGrid.Columns>
+                                    </DataGrid>
+                                </DockPanel>
+                            </TabItem>
+                            <TabItem Header="Bytes">
+                                <ScrollViewer>
+                                    <ItemsControl ItemsSource="{Binding Bytes}">
+                                        <ItemsControl.ItemsPanel>
+                                            <ItemsPanelTemplate>
+                                                <WrapPanel/>
+                                            </ItemsPanelTemplate>
+                                        </ItemsControl.ItemsPanel>
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate x:DataType="vm:ByteChunk">
+                                                <Border Background="{Binding Role, Converter={x:Static views:InspectorConverters.RoleBrush}}"
+                                                        ToolTip.Tip="{Binding Tooltip}" Margin="0,0,4,4" Padding="4,2" CornerRadius="2">
+                                                    <TextBlock Text="{Binding Hex}" FontFamily="monospace" Foreground="Black"
+                                                               TextWrapping="Wrap" MaxWidth="600"/>
+                                                </Border>
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+                                </ScrollViewer>
+                            </TabItem>
+                        </TabControl>
+                    </DockPanel>
+                    </Panel>
+                </Grid>
+            </TabItem>
             <TabItem Header="By operation type">
                 <DataGrid ItemsSource="{Binding Statistics.ByOperation}" IsReadOnly="True"
                           AutoGenerateColumns="False">

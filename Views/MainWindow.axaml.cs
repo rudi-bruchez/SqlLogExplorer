@@ -47,6 +47,17 @@ public partial class MainWindow : Window
             await vm.LoadLiveAsync(r.ConnectionString, r.Range);
     }
 
+    /// <summary>Hors ligne : la boîte de connexion existante choisit la base dont le catalogue sert de schéma (spec01 §5.1).</summary>
+    private async void OnConnectSchemaSource(object? sender, RoutedEventArgs e)
+    {
+        if (DataContext is not MainWindowViewModel vm) return;
+
+        var dialog = new Views.ConnectionDialog { DataContext = new ConnectionDialogViewModel() };
+        var result = await dialog.ShowDialog<(string ConnectionString, LsnRange? Range)?>(this);
+        if (result is { } r && !string.IsNullOrWhiteSpace(r.ConnectionString))
+            await vm.ConnectSchemaSourceAsync(r.ConnectionString);
+    }
+
     // Libère le cache SQLite (connexion + fichier temporaire) à la fermeture de la fenêtre.
     protected override async void OnClosed(EventArgs e)
     {
