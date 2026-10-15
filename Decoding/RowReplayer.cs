@@ -33,9 +33,13 @@ public static class RowReplayer
     /// <summary>chain : les enregistrements de données de cette ligne (insert, delete, modify), dans l'ordre des LSN ;
     /// les compensations n'y sont pas (elles n'ont pas de clé, spec03 §7.1). outcomes : par Transaction ID ;
     /// une transaction absente du dictionnaire, ou un TransactionId null, vaut Unknown.
-    /// currentRow : image de l'ancre 3 (après le dernier enregistrement de chain), ou null.</summary>
+    /// currentRow : image de l'ancre 3 (après le dernier enregistrement de chain), ou null.
+    /// firstUndoLsns : par Transaction ID, le LSN de la première compensation de ligne ou du premier LOP_CTR_NEST_ABORT (FirstUndoLsns) ;
+    /// sans lui, un enregistrement choisi d'une transaction annulée qui a déjà annulé un point de sauvegarde n'est pas reconnu (spec03 §7.3).
+    /// selectedLsn et les LSN de la chaîne sont normalisés (Lsn.Normalize) : la comparaison est ordinale.</summary>
     public static ReplayResult Replay(IReadOnlyList<LogRecord> chain, string selectedLsn,
-        IReadOnlyDictionary<string, TxOutcome> outcomes, IReadOnlySet<string> adrReverts, byte[]? currentRow = null)
+        IReadOnlyDictionary<string, TxOutcome> outcomes, IReadOnlySet<string> adrReverts, byte[]? currentRow = null,
+        IReadOnlyDictionary<string, string>? firstUndoLsns = null)
     {
         TxOutcome OutcomeOf(LogRecord r) =>
             r.TransactionId is not null && outcomes.TryGetValue(r.TransactionId, out var o) ? o : TxOutcome.Unknown;
@@ -45,8 +49,13 @@ public static class RowReplayer
             return Fail(NoImage);
 
         // Une révocation ADR n'importe où dans la chaîne, avant ou après l'enregistrement choisi, arrête tout rejeu (§7.3).
-        var revert = chain.FirstOrDefault(r => r.TransactionId is not null && adrReverts.Contains(r.TransactionId));
-        if (revert is not null) return Fail(Partial(revert));
+        if (chain.Any(r => r.TransactionId is not null && adrReverts.Contains(r.TransactionId))) return Fail("ADR revert in the chain, not replayed");
+
+        // Une transaction annulée qui a défait un point de sauvegarde avant l'enregistrement choisi : ce qu'elle a défait serait rejoué comme s'il tenait (§7.3).
+        if (OutcomeOf(selected) == TxOutcome.RolledBack && selected.TransactionId is not null
+            && firstUndoLsns is not null && firstUndoLsns.TryGetValue(selected.TransactionId, out var undo)
+            && string.CompareOrdinal(undo, selected.Lsn) < 0)
+            return Fail("partial rollback before the selected record, not replayed");
 
         // Les compensations ne sont jamais dans une chaîne ; une transaction annulée n'y compte pas, sauf celle de l'enregistrement choisi, jusqu'à lui.
         var selectedOutcome = OutcomeOf(selected);
@@ -153,6 +162,8 @@ public static class RowReplayer
         {
             var step = steps[i];
             if (step.Outcome == TxOutcome.PartlyRolledBack) return new Failure(Partial(step.Record));
+            // Un delete sépare deux vies de la clé : le premier enregistrement après lui ouvre une vie dont rien ne précède l'image (§7.4).
+            if (i > 0 && steps[i - 1].Record.Operation == Delete) return new Failure("row inserted again after a delete, no image before it");
             var fragments = ModifyDecoder.Decode(step.Record);
             if (fragments is null) return new Failure($"modification not decodable at LSN {step.Record.Lsn}");
             after = row;
@@ -181,12 +192,23 @@ public static class RowReplayer
             _ => TxOutcome.Unknown,
         });
 
-    /// <summary>Transactions partiellement annulées par une révocation ADR : LOP_CTR_NEST_ABORT sans aucun enregistrement de compensation (spec03 §7.3).</summary>
+    /// <summary>Révocations ADR (spec03 §7.3) : transactions qui portent un LOP_CTR_NEST_ABORT, ou annulées en entier, et n'ont aucune compensation de ligne.
+    /// Leurs octets annulés restent dans la page et passent dans les enregistrements suivants ; l'issue ne compte pas.</summary>
     public static IReadOnlySet<string> AdrReverts(IEnumerable<LogRecord> transactionRecords) =>
         Summarize(transactionRecords)
-            .Where(t => t.Value is { Commit: true, Abort: false, Nest: true, Compensation: false })
+            .Where(t => (t.Value.Nest || t.Value.Abort) && !t.Value.Compensation)
             .Select(t => t.Key)
             .ToHashSet();
+
+    /// <summary>Par transaction, le plus petit LSN d'une compensation de ligne ou d'un LOP_CTR_NEST_ABORT : le moment où elle a défait quelque chose.</summary>
+    public static IReadOnlyDictionary<string, string> FirstUndoLsns(IEnumerable<LogRecord> transactionRecords) =>
+        transactionRecords
+            .Where(r => r.TransactionId is not null && (r.Operation == "LOP_CTR_NEST_ABORT" || IsRowCompensation(r)))
+            .GroupBy(r => r.TransactionId!)
+            .ToDictionary(g => g.Key, g => g.Select(r => r.Lsn).Order(StringComparer.Ordinal).First());
+
+    private static bool IsRowCompensation(LogRecord r) =>
+        r.IsCompensation && r.Operation is "LOP_INSERT_ROWS" or "LOP_DELETE_ROWS" or "LOP_MODIFY_ROW" or "LOP_MODIFY_COLUMNS";
 
     private sealed record Flags(bool Commit = false, bool Abort = false, bool Compensation = false, bool Nest = false);
 
@@ -203,8 +225,7 @@ public static class RowReplayer
                 "LOP_ABORT_XACT" => f with { Abort = true },
                 "LOP_CTR_NEST_ABORT" => f with { Nest = true },
                 // LOP_CTR_NEST_ABORT et LOP_LOCK_XACT portent aussi « COMPENSATION » (fixture ADR) : seule la compensation d'une ligne compte.
-                "LOP_INSERT_ROWS" or "LOP_DELETE_ROWS" or "LOP_MODIFY_ROW" or "LOP_MODIFY_COLUMNS" => r.IsCompensation ? f with { Compensation = true } : f,
-                _ => f,
+                _ => IsRowCompensation(r) ? f with { Compensation = true } : f,
             };
         }
         return flags;

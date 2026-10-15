@@ -37,8 +37,8 @@ public class RowReplayerTests(ITestOutputHelper output)
     private static readonly IReadOnlySet<string> NoReverts = new HashSet<string>();
 
     private static ReplayResult Replay(IReadOnlyList<LogRecord> chain, int selected, IReadOnlyDictionary<string, TxOutcome>? outcomes = null,
-        IReadOnlySet<string>? reverts = null, byte[]? currentRow = null) =>
-        RowReplayer.Replay(chain, L(selected), outcomes ?? AllCommitted, reverts ?? NoReverts, currentRow);
+        IReadOnlySet<string>? reverts = null, byte[]? currentRow = null, IReadOnlyDictionary<string, string>? firstUndoLsns = null) =>
+        RowReplayer.Replay(chain, L(selected), outcomes ?? AllCommitted, reverts ?? NoReverts, currentRow, firstUndoLsns);
 
     private static IReadOnlyDictionary<string, TxOutcome> With(params (string Tx, TxOutcome Outcome)[] more)
     {
@@ -218,7 +218,7 @@ public class RowReplayerTests(ITestOutputHelper output)
         var withoutRevert = Replay(chain, 3, outcomes);
 
         Assert.Null(withRevert.After);
-        Assert.Equal($"partial rollback at LSN {L(5)}, not replayed", withRevert.Status);
+        Assert.Equal("ADR revert in the chain, not replayed", withRevert.Status);
         Assert.Equal(AnchorKind.Delete, withoutRevert.Anchor);
         Assert.Equal(WithA(AbcdefRow, 0x0B), withoutRevert.After);
         Assert.Equal($"rebuilt backwards from DELETE at LSN {L(4)}", withoutRevert.Status);
@@ -230,7 +230,7 @@ public class RowReplayerTests(ITestOutputHelper output)
         var outcomes = With(("P", TxOutcome.PartlyRolledBack));
         var chain = new[] { Insert(1, "A", SpecRow), SetA(2, "P"), GrowB(3, "C") };
 
-        Assert.Equal($"partial rollback at LSN {L(2)}, not replayed", Replay(chain, 3, outcomes, new HashSet<string> { Tx("P") }).Status);
+        Assert.Equal("ADR revert in the chain, not replayed", Replay(chain, 3, outcomes, new HashSet<string> { Tx("P") }).Status);
     }
 
     [Fact]
@@ -321,14 +321,63 @@ public class RowReplayerTests(ITestOutputHelper output)
     }
 
     [Fact]
-    public void AnInsertBeforeADelete_IsNotAnAnchorForARecordAfterTheDelete()
+    public void FirstRecordAfterADelete_HasNoImageBeforeIt()
     {
+        // Sous ADR la clé revient par un modify sur le fantôme, pas par un insert (spec03 §7.4) : la vie précédente ne se rejoue pas dans la nouvelle.
         var chain = new[] { Insert(1, "A", SpecRow), Delete(2, "D", SpecRow), SetA(3, "B"), Delete(4, "D", WithA(SpecRow, 0x0B)) };
 
         var r = Replay(chain, 3);
 
-        Assert.Equal(AnchorKind.Delete, r.Anchor);
-        Assert.Equal(L(4), r.AnchorLsn);
+        Assert.Null(r.Before);
+        Assert.Null(r.After);
+        Assert.Equal("row inserted again after a delete, no image before it", r.Status);
+    }
+
+    [Fact]
+    public void SecondRecordAfterADelete_ReplaysBackwardsWithinTheNewLife()
+    {
+        var chain = new[] { Insert(1, "A", SpecRow), Delete(2, "D", SpecRow), SetA(3, "B"), GrowB(4, "C"), Delete(5, "D", WithA(AbcdefRow, 0x0B)) };
+
+        var r = Replay(chain, 4);
+
+        Assert.Equal(WithA(SpecRow, 0x0B), r.Before);
+        Assert.Equal(WithA(AbcdefRow, 0x0B), r.After);
+        Assert.Equal(L(5), r.AnchorLsn);
+    }
+
+    [Fact]
+    public void FirstRecordAfterADelete_IsNotReplayedFromTheCurrentRowEither()
+    {
+        var chain = new[] { Insert(1, "A", SpecRow), Delete(2, "D", SpecRow), SetA(3, "B") };
+
+        Assert.Equal("row inserted again after a delete, no image before it", Replay(chain, 3, currentRow: WithA(SpecRow, 0x0B)).Status);
+    }
+
+    [Fact]
+    public void RolledBackSelectedRecord_AfterASavepointUndo_IsNotReplayed()
+    {
+        var outcomes = With(("R", TxOutcome.RolledBack));
+        var chain = new[] { Insert(1, "A", SpecRow), SetA(2, "R"), SetA(3, "R", 0x0B, 0x0C), GrowB(4, "R") };
+        var undoAfterSecond = new Dictionary<string, string> { [Tx("R")] = L(3) + "0" };   // la compensation vient après le LSN 3 mais avant le 4
+        var undoAtTheEnd = new Dictionary<string, string> { [Tx("R")] = L(9) };
+
+        var before = Replay(chain, 4, outcomes, firstUndoLsns: undoAfterSecond);
+        var after = Replay(chain, 4, outcomes, firstUndoLsns: undoAtTheEnd);
+
+        Assert.Null(before.After);
+        Assert.Equal("partial rollback before the selected record, not replayed", before.Status);
+        Assert.StartsWith("rebuilt forwards", after.Status);
+    }
+
+    [Fact]
+    public void RolledBackSelectedRecord_BeforeTheSavepointUndo_IsStillReplayed()
+    {
+        var outcomes = With(("R", TxOutcome.RolledBack));
+        var chain = new[] { Insert(1, "A", SpecRow), SetA(2, "R"), SetA(3, "R", 0x0B, 0x0C) };
+
+        var r = Replay(chain, 2, outcomes, firstUndoLsns: new Dictionary<string, string> { [Tx("R")] = L(3) });
+
+        Assert.Equal(WithA(SpecRow, 0x0B), r.After);
     }
 
     [Fact]
@@ -371,7 +420,7 @@ public class RowReplayerTests(ITestOutputHelper output)
     }
 
     [Fact]
-    public void AdrReverts_HoldsTheNestAbortWithoutCompensation_NotTheOneWithBoth()
+    public void AdrReverts_HoldsNestAbortOrWholeRollbackWithoutRowCompensation()
     {
         var records = new[]
         {
@@ -379,12 +428,30 @@ public class RowReplayerTests(ITestOutputHelper output)
             Tr("4", "LOP_CTR_NEST_ABORT", "COMPENSATION;Start nest Id (2)"), Tr("4", "LOP_MODIFY_ROW", "COMPENSATION"), Tr("4", "LOP_COMMIT_XACT"),
             Tr("5", "LOP_COMMIT_XACT"),
             Tr("7", "LOP_CTR_NEST_ABORT", "COMPENSATION;Start nest Id (2)"), Tr("7", "LOP_LOCK_XACT", "COMPENSATION"), Tr("7", "LOP_COMMIT_XACT"),   // fixture ADR : le verrou compensé n'est pas une compensation de ligne
-            Tr("6", "LOP_CTR_NEST_ABORT", "COMPENSATION;Start nest Id (2)"),   // jamais validée : inconnue, pas une révocation
+            Tr("6", "LOP_CTR_NEST_ABORT", "COMPENSATION;Start nest Id (2)"),   // jamais validée : l'issue ne compte pas
+            Tr("8", "LOP_MODIFY_ROW"), Tr("8", "LOP_ABORT_XACT"),               // annulée en entier sans compensation de ligne (ADR)
+            Tr("9", "LOP_MODIFY_ROW"), Tr("9", "LOP_MODIFY_ROW", "COMPENSATION"), Tr("9", "LOP_ABORT_XACT"),   // annulée avec compensation : pas ADR
         };
 
         var reverts = RowReplayer.AdrReverts(records);
 
-        Assert.Equal([Tx("3"), Tx("7")], reverts.OrderBy(x => x));
+        Assert.Equal([Tx("3"), Tx("6"), Tx("7"), Tx("8")], reverts.OrderBy(x => x));
+    }
+
+    [Fact]
+    public void FirstUndoLsns_IsTheEarliestRowCompensationOrNestAbort()
+    {
+        var records = new[]
+        {
+            Tr("1", "LOP_MODIFY_ROW", "COMPENSATION") with { Lsn = L(7) }, Tr("1", "LOP_CTR_NEST_ABORT", "COMPENSATION") with { Lsn = L(5) },
+            Tr("1", "LOP_LOCK_XACT", "COMPENSATION") with { Lsn = L(2) },
+            Tr("2", "LOP_COMMIT_XACT"),
+        };
+
+        var lsns = RowReplayer.FirstUndoLsns(records);
+
+        Assert.Equal(L(5), lsns[Tx("1")]);
+        Assert.False(lsns.ContainsKey(Tx("2")));
     }
 
     // ---- Fixtures ----
@@ -460,6 +527,84 @@ public class RowReplayerTests(ITestOutputHelper output)
         output.WriteLine($"{version}: revert at {revert.Lsn} ({revert.Operation})");
 
         foreach (var m in modifies)
-            Assert.Equal($"partial rollback at LSN {revert.Lsn}, not replayed", RowReplayer.Replay(chain, m.Lsn, outcomes, reverts).Status);
+            Assert.Equal("ADR revert in the chain, not replayed", RowReplayer.Replay(chain, m.Lsn, outcomes, reverts).Status);
+    }
+
+    // ---- Chaînes réelles de la revue (2022, capturées avec et sans ADR, une ligne chacune) ----
+
+    private static ReplayResult Probe(Fixture f, IReadOnlyList<LogRecord> chain, string lsn) =>
+        RowReplayer.Replay(chain, lsn, RowReplayer.Classify(f.Log), RowReplayer.AdrReverts(f.Log), null, RowReplayer.FirstUndoLsns(f.Log));
+
+    private static List<LogRecord> Modifies(IEnumerable<LogRecord> chain) =>
+        chain.Where(r => r.Operation is "LOP_MODIFY_ROW" or "LOP_MODIFY_COLUMNS").ToList();
+
+    [Fact]
+    public void Real_RolledBackTransactionThatUndidASavepoint_WithoutAdr()
+    {
+        // BEGIN TRAN; a = 30; SAVE TRAN s; a = 31; ROLLBACK TRAN s; b = 'z'; ROLLBACK; puis b = 'final' (validé) et un delete.
+        var f = FixtureSet.Load("2022", "rollback_savepoint_plain");
+        var (schema, all) = f.ForTable("dbo.p");
+        var chain = all.Where(r => !r.IsCompensation).ToList();
+        var mods = Modifies(chain);
+        Assert.Equal(4, mods.Count);
+
+        var a30 = Probe(f, chain, mods[0].Lsn);
+        var a31 = Probe(f, chain, mods[1].Lsn);
+        var z = Probe(f, chain, mods[2].Lsn);
+        var final = Probe(f, chain, mods[3].Lsn);
+
+        Assert.Equal("id=2, a=30, b=b", Values(a30.After!, schema));
+        Assert.Equal("id=2, a=30, b=b", Values(a31.Before!, schema));
+        Assert.Equal("id=2, a=31, b=b", Values(a31.After!, schema));
+        Assert.Null(z.Before);
+        Assert.Null(z.After);
+        Assert.Equal("partial rollback before the selected record, not replayed", z.Status);
+        Assert.Equal("id=2, a=20, b=b", Values(final.Before!, schema));
+        Assert.Equal("id=2, a=20, b=final", Values(final.After!, schema));
+    }
+
+    [Fact]
+    public void Real_WholeRollbackAfterASavepointUndo_UnderAdr_PoisonsEveryRecordOfTheRow()
+    {
+        // Même scénario sous ADR : aucune compensation de ligne, les octets annulés fuient dans le modify validé suivant.
+        var f = FixtureSet.Load("2022", "rollback_savepoint_adr");
+        var (_, all) = f.ForTable("dbo.p");
+        var chain = all.Where(r => !r.IsCompensation).ToList();
+        var mods = Modifies(chain);
+        Assert.Equal(4, mods.Count);
+        var outcomes = RowReplayer.Classify(f.Log);
+
+        var aborted = mods[2].TransactionId!;
+        Assert.Equal(TxOutcome.RolledBack, outcomes[aborted]);
+        Assert.Contains(aborted, RowReplayer.AdrReverts(f.Log));
+        Assert.Equal(TxOutcome.Committed, outcomes[mods[3].TransactionId!]);
+        foreach (var m in mods)
+            Assert.Equal("ADR revert in the chain, not replayed", Probe(f, chain, m.Lsn).Status);
+    }
+
+    [Fact]
+    public void Real_KeyInsertedAgainUnderAdr_IsALogModifyOnTheGhost()
+    {
+        // INSERT 7; a = 71; DELETE; INSERT 7 (modify sur le fantôme sous ADR); a = 701; b = 'g2'; DELETE; INSERT 7 (idem); b = 'g4'.
+        var f = FixtureSet.Load("2022", "reinsert_adr");
+        var (schema, all) = f.ForTable("dbo.p");
+        var chain = all.Where(r => !r.IsCompensation).ToList();
+        var mods = Modifies(chain);
+        Assert.Equal(6, mods.Count);
+
+        var reinserted = Probe(f, chain, mods[1].Lsn);
+        Assert.Null(reinserted.Before);
+        Assert.Equal("row inserted again after a delete, no image before it", reinserted.Status);
+
+        var second = Probe(f, chain, mods[2].Lsn);
+        Assert.Equal("id=7, a=700, b=gg", Values(second.Before!, schema));
+        Assert.Equal("id=7, a=701, b=gg", Values(second.After!, schema));
+
+        var firstLife = Probe(f, chain, mods[0].Lsn);
+        Assert.Equal("id=7, a=70, b=g", Values(firstLife.Before!, schema));
+        Assert.StartsWith("rebuilt forwards", firstLife.Status);
+
+        Assert.Equal("no full image of this row available", Probe(f, chain, mods[4].Lsn).Status);
+        Assert.Equal("no full image of this row available", Probe(f, chain, mods[5].Lsn).Status);
     }
 }
