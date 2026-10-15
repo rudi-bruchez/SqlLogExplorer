@@ -19,7 +19,22 @@ SELECT au.allocation_unit_id                                   AS AllocUnitId,
        pc.is_dropped                                           AS IsDropped,
        pc.is_uniqueifier                                       AS IsUniqueifier,
        pc.has_default                                          AS HasDefault,
-       CONVERT(nvarchar(4000), pc.default_value)               AS DefaultValue,
+       -- default_value est un sql_variant : CONVERT nu perd les décimales, les secondes et dépend de la langue.
+       CASE CONVERT(sysname, SQL_VARIANT_PROPERTY(pc.default_value, 'BaseType'))
+            WHEN 'date'           THEN CONVERT(nvarchar(4000), pc.default_value, 126)
+            WHEN 'time'           THEN CONVERT(nvarchar(4000), pc.default_value, 126)
+            WHEN 'datetime'       THEN CONVERT(nvarchar(4000), pc.default_value, 126)
+            WHEN 'smalldatetime'  THEN CONVERT(nvarchar(4000), pc.default_value, 126)
+            WHEN 'datetime2'      THEN CONVERT(nvarchar(4000), pc.default_value, 126)
+            WHEN 'datetimeoffset' THEN CONVERT(nvarchar(4000), pc.default_value, 126)
+            WHEN 'binary'         THEN CONVERT(nvarchar(4000), pc.default_value, 1)
+            WHEN 'varbinary'      THEN CONVERT(nvarchar(4000), pc.default_value, 1)
+            WHEN 'money'          THEN CONVERT(nvarchar(4000), pc.default_value, 2)
+            WHEN 'smallmoney'     THEN CONVERT(nvarchar(4000), pc.default_value, 2)
+            WHEN 'float'          THEN CONVERT(nvarchar(4000), pc.default_value, 3)
+            WHEN 'real'           THEN CONVERT(nvarchar(4000), pc.default_value, 3)
+            ELSE CONVERT(nvarchar(4000), pc.default_value)
+       END                                                     AS DefaultValue,
        ic.key_ordinal                                          AS KeyOrdinal
 FROM sys.allocation_units AS au
 JOIN sys.partitions AS p ON p.partition_id = au.container_id
@@ -32,4 +47,4 @@ LEFT JOIN sys.index_columns AS ic
 WHERE OBJECTPROPERTY(p.object_id, 'IsMsShipped') = 0
   AND au.type IN (1, 3)
   AND (@AllocUnitId IS NULL OR au.allocation_unit_id = @AllocUnitId)
-ORDER BY au.allocation_unit_id, pc.leaf_null_bit;
+ORDER BY au.allocation_unit_id, pc.leaf_null_bit, pc.partition_column_id;

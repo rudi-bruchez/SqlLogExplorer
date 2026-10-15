@@ -74,4 +74,55 @@ public class SchemaProviderIntegrationTests
             await ExecAsync(master, $"ALTER DATABASE [{db}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE [{db}];");
         }
     }
+
+    [IntegrationFact]
+    public async Task GetAsync_ReadsDefaultValuesWithoutLoss()
+    {
+        var master = Environment.GetEnvironmentVariable("SQLLOGEXPLORER_TEST_SQL");
+        Assert.False(string.IsNullOrEmpty(master), "Définir SQLLOGEXPLORER_TEST_SQL.");
+        var db = "sle_schema_" + Guid.NewGuid().ToString("N");
+        var cs = new SqlConnectionStringBuilder(master) { InitialCatalog = db }.ConnectionString;
+
+        await ExecAsync(master, $"CREATE DATABASE [{db}];");
+        try
+        {
+            // Une ligne existe avant l'ADD COLUMN : c'est le cas où la valeur par défaut sert à décoder (spec03 §5).
+            await ExecAsync(cs, """
+                CREATE TABLE dbo.t(id int NOT NULL);
+                INSERT dbo.t VALUES (1);
+                ALTER TABLE dbo.t ADD
+                    m money NOT NULL DEFAULT 12.3456,
+                    d2 datetime2(7) NOT NULL DEFAULT '2024-01-02 03:04:05.1234567',
+                    dto datetimeoffset NOT NULL DEFAULT '2024-01-02 03:04:05.1234567 +02:00',
+                    vb varbinary(10) NOT NULL DEFAULT 0x0102,
+                    r real NOT NULL DEFAULT 1.5e-10,
+                    n nvarchar(10) NOT NULL DEFAULT N'αβγ',
+                    i int NOT NULL DEFAULT 7;
+                """);
+            var t = await new SchemaProvider(cs).GetAsync(await AllocUnitAsync(cs, "dbo.t"));
+            Assert.NotNull(t);
+
+            var expected = new Dictionary<string, string>
+            {
+                ["m"] = "12.3456",
+                ["d2"] = "2024-01-02T03:04:05.1234567",
+                ["dto"] = "2024-01-02T03:04:05.1234567+02:00",
+                ["vb"] = "0x0102",
+                ["r"] = "1.4999999853326784e-010",
+                ["n"] = "αβγ",
+                ["i"] = "7",
+            };
+            foreach (var (name, value) in expected)
+            {
+                var col = t.Columns.Single(x => x.Name == name);
+                Assert.True(col.HasDefault, name);
+                Assert.Equal(value, col.DefaultValue);
+            }
+        }
+        finally
+        {
+            SqlConnection.ClearAllPools();
+            await ExecAsync(master, $"ALTER DATABASE [{db}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE [{db}];");
+        }
+    }
 }
