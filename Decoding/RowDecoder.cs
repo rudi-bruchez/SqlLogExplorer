@@ -20,6 +20,12 @@ public static class RowDecoder
 
         var a = row[0];
         var type = a >> 1 & 7;
+        // Le bit 0 de A n'appartient à aucun champ du format FixedVar ; il est posé sur toutes les lignes compressées mesurées (ROW et PAGE).
+        if ((a & 1) != 0)
+        {
+            fields.Add(new DecodedField(0, row.Length, FieldRole.Malformed, Problem: "not a FixedVar row (compressed rows are not decoded)"));
+            return new DecodedRow(type, fields, columns);
+        }
         if (schema is not null && IsCompressed(schema))
         {
             fields.Add(new DecodedField(0, row.Length, FieldRole.Malformed, Problem: "compressed rows are not decoded"));

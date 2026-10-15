@@ -164,7 +164,25 @@ public class RowDecoderTests
 
         Assert.True(row.HasProblem);
         Assert.Empty(row.Columns);
-        Assert.Contains(row.Fields, f => f.Role == FieldRole.Malformed && f.Offset == 0 && f.Length == 9 && f.Problem == "compressed rows are not decoded");
+        Assert.Contains(row.Fields, f => f.Role == FieldRole.Malformed && f.Offset == 0 && f.Length == 9 && f.Problem!.Contains("compressed rows are not decoded"));
+    }
+
+    [Theory]   // lignes réelles de SQL Server 2022, table (a varchar(10), b varchar(10)) compressée ROW ou PAGE : ('abc','de') et (NULL,'x')
+    [InlineData("010234616263646500")] [InlineData("010220786263646500")]
+    public void CompressedRowOfVariableOnlyTable_IsRejected_WithOrWithoutSchema(string hex)
+    {
+        var s = new TableSchema(1, "dbo", "vr", 0, 1, new[]
+        {
+            Col(1, "a", -1, 1, 167, 10) with { CodePage = 1252 }, Col(2, "b", -2, 2, 167, 10) with { CodePage = 1252 },
+        });
+
+        foreach (var schema in new[] { s, null })
+        {
+            var row = RowDecoder.Decode(Hex(hex), schema);
+            Assert.True(row.HasProblem);
+            Assert.Empty(row.Columns);
+            Assert.Contains(row.Fields, f => f.Role == FieldRole.Malformed && f.Offset == 0 && f.Length == 9 && f.Problem!.StartsWith("not a FixedVar row"));
+        }
     }
 
     [Fact]
@@ -176,7 +194,7 @@ public class RowDecoderTests
         });
         var row = RowDecoder.Decode(Hex("30000400030000" + "00" + "0300" + "0000" + "0000"), s);   // seule la décision de compression compte ici
 
-        Assert.DoesNotContain(row.Fields, f => f.Problem == "compressed rows are not decoded");
+        Assert.DoesNotContain(row.Fields, f => f.Problem?.Contains("compressed rows are not decoded") == true);
     }
 
     // ---- Fixtures : journaux réels de SQL Server 2017 à 2025 (spec03 §10.1) ----
