@@ -28,4 +28,20 @@ public class FixtureSetTests
         foreach (var record in records)
             Assert.Contains(fixture.Pages, p => p.PageId == record.PageId);
     }
+
+    [Theory, MemberData(nameof(Versions))]
+    public void Modify_LogRecordBytes_OnlyOnModifyColumns(string version)
+    {
+        var log = FixtureSet.Load(version, "modify").Log;
+        var modifyColumns = log.Where(r => r.Operation == "LOP_MODIFY_COLUMNS").ToList();
+        Assert.NotEmpty(modifyColumns);
+        foreach (var r in modifyColumns)
+        {
+            Assert.NotNull(r.LogRecordBytes);
+            Assert.NotEmpty(r.LogRecordBytes!);
+            // spec03 §6.2 : le u16 à l'offset 2 de l'en-tête est la longueur fixe, 62 pour LOP_MODIFY_COLUMNS.
+            Assert.Equal(62, BitConverter.ToUInt16(r.LogRecordBytes!, 2));
+        }
+        Assert.All(log.Where(r => r.Operation != "LOP_MODIFY_COLUMNS"), r => Assert.Null(r.LogRecordBytes));
+    }
 }

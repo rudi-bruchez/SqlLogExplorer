@@ -21,7 +21,7 @@ public sealed class LogQuery
         cmd.CommandText =
             "SELECT LSN, Operation, Context, TransactionId, AllocUnitName, RowLogContents0, RowLogContents1, " +
             "AllocUnitId, PartitionId, PageId, SlotId, OffsetInRow, ModifySize, NumElements, " +
-            "Description, TransactionName, RowLogContents2, RowLogContents3, RowLogContents4, RowLogContents5 " +
+            "Description, TransactionName, RowLogContents2, RowLogContents3, RowLogContents4, RowLogContents5, LogRecordBytes " +
             $"FROM LogRecords{where} ORDER BY LSN LIMIT $limit OFFSET $offset;";
         cmd.Parameters.AddWithValue("$limit", limit);
         cmd.Parameters.AddWithValue("$offset", offset);
@@ -49,6 +49,7 @@ public sealed class LogQuery
             OffsetInRow = Int(r, 11), ModifySize = Int(r, 12), NumElements = Int(r, 13),
             Description = Text(r, 14), TransactionName = Text(r, 15),
             RowLogContents2 = Bytes(r, 16), RowLogContents3 = Bytes(r, 17), RowLogContents4 = Bytes(r, 18), RowLogContents5 = Bytes(r, 19),
+            LogRecordBytes = Bytes(r, 20),
         };
     }
 

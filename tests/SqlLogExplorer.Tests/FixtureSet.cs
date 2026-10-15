@@ -54,6 +54,8 @@ public static class FixtureSet
             OffsetInRow = l.OffsetInRow, ModifySize = l.ModifySize, NumElements = l.NumElements,
             Description = l.Description, TransactionName = l.TransactionName,
             RowLogContents2 = l.Rlc2, RowLogContents3 = l.Rlc3, RowLogContents4 = l.Rlc4, RowLogContents5 = l.Rlc5,
+            // Comme l'import : le Log Record entier pour LOP_MODIFY_COLUMNS seulement.
+            LogRecordBytes = l.Operation == "LOP_MODIFY_COLUMNS" ? l.LogRecord : null,
         }).ToList();
 
         var schemas = (doc.Schema ?? []).GroupBy(c => c.AllocUnitId).ToDictionary(g => g.Key, g =>
@@ -104,6 +106,7 @@ public static class FixtureSet
         public byte[]? Rlc3 { get; set; }
         public byte[]? Rlc4 { get; set; }
         public byte[]? Rlc5 { get; set; }
+        public byte[]? LogRecord { get; set; }
     }
 
     private sealed class SchemaRow

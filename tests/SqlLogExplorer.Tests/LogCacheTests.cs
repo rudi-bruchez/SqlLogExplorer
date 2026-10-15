@@ -91,6 +91,24 @@ public class LogCacheTests
     }
 
     [Fact]
+    public async Task InsertBatchAsync_RoundTripsLogRecordBytes()
+    {
+        await using var cache = await LogCache.CreateAsync(TempDb());
+        var modify = new Models.LogRecord("0000002A:00000010:0005", "LOP_MODIFY_COLUMNS", "LCX_CLUSTERED", "0000:00000003", "dbo.m2", null, null)
+        {
+            LogRecordBytes = new byte[] { 0x00, 0x00, 0x3E, 0x00, 0xAB },
+        };
+        var other = new Models.LogRecord("0000002A:00000010:0006", "LOP_INSERT_ROWS", "LCX_CLUSTERED", "0000:00000003", "dbo.m2", null, null);
+        await cache.InsertBatchAsync(new[] { modify, other });
+
+        var page = await new Data.LogQuery(cache.Connection).GetPageAsync(0, 10);
+
+        Assert.Equal(new[] { modify, other }, page, new LogRecordComparer());
+        Assert.Equal(new byte[] { 0x00, 0x00, 0x3E, 0x00, 0xAB }, page[0].LogRecordBytes);
+        Assert.Null(page[1].LogRecordBytes);
+    }
+
+    [Fact]
     public async Task SetRowKeysAsync_StoresKeysByLsn()
     {
         await using var cache = await LogCache.CreateAsync(TempDb());

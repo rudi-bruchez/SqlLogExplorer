@@ -11,7 +11,8 @@ public static class LogColumns
         [RowLog Contents 0], [RowLog Contents 1],
         [AllocUnitId], [PartitionId], [Page ID], [Slot ID], [Offset in Row], [Modify Size], [Num Elements],
         [Description], [Transaction Name],
-        [RowLog Contents 2], [RowLog Contents 3], [RowLog Contents 4], [RowLog Contents 5]
+        [RowLog Contents 2], [RowLog Contents 3], [RowLog Contents 4], [RowLog Contents 5],
+        CASE WHEN [Operation] = N'LOP_MODIFY_COLUMNS' THEN [Log Record] END
         """;
 
     /// <summary>Lecture dans l'ordre du SELECT (accès séquentiel). Les types sont ceux que fn_dblog renvoie
@@ -29,6 +30,7 @@ public static class LogColumns
             OffsetInRow = Int(r, 11), ModifySize = Int(r, 12), NumElements = Int(r, 13),
             Description = Text(r, 14), TransactionName = Text(r, 15),
             RowLogContents2 = Bytes(r, 16), RowLogContents3 = Bytes(r, 17), RowLogContents4 = Bytes(r, 18), RowLogContents5 = Bytes(r, 19),
+            LogRecordBytes = Bytes(r, 20),
         };
     }
 }

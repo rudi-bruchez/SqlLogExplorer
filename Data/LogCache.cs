@@ -60,6 +60,7 @@ public sealed class LogCache : IAsyncDisposable, IDisposable
                 RowLogContents3 BLOB,
                 RowLogContents4 BLOB,
                 RowLogContents5 BLOB,
+                LogRecordBytes  BLOB,
                 RowKey          TEXT
             );
             CREATE INDEX IF NOT EXISTS IX_LogRecords_AllocUnitName ON LogRecords(AllocUnitName);
@@ -86,11 +87,11 @@ public sealed class LogCache : IAsyncDisposable, IDisposable
             INSERT OR IGNORE INTO LogRecords
                 (LSN, Operation, Context, TransactionId, AllocUnitName, RowLogContents0, RowLogContents1,
                  AllocUnitId, PartitionId, PageId, SlotId, OffsetInRow, ModifySize, NumElements,
-                 Description, TransactionName, RowLogContents2, RowLogContents3, RowLogContents4, RowLogContents5)
+                 Description, TransactionName, RowLogContents2, RowLogContents3, RowLogContents4, RowLogContents5, LogRecordBytes)
             VALUES
                 ($lsn, $op, $ctx, $txid, $alloc, $rlc0, $rlc1,
                  $auid, $pid, $page, $slot, $off, $msize, $nel,
-                 $desc, $txname, $rlc2, $rlc3, $rlc4, $rlc5);
+                 $desc, $txname, $rlc2, $rlc3, $rlc4, $rlc5, $lrb);
             """;
 
         var pLsn    = AddParam(cmd, "$lsn");
@@ -113,6 +114,7 @@ public sealed class LogCache : IAsyncDisposable, IDisposable
         var pRlc3   = AddParam(cmd, "$rlc3");
         var pRlc4   = AddParam(cmd, "$rlc4");
         var pRlc5   = AddParam(cmd, "$rlc5");
+        var pLrb    = AddParam(cmd, "$lrb");
 
         long inserted = 0;
         cmd.Prepare();
@@ -139,6 +141,7 @@ public sealed class LogCache : IAsyncDisposable, IDisposable
             pRlc3.Value   = (object?)r.RowLogContents3 ?? DBNull.Value;
             pRlc4.Value   = (object?)r.RowLogContents4 ?? DBNull.Value;
             pRlc5.Value   = (object?)r.RowLogContents5 ?? DBNull.Value;
+            pLrb.Value    = (object?)r.LogRecordBytes ?? DBNull.Value;
             inserted += cmd.ExecuteNonQuery(); // 0 pour une ligne ignorée.
         }
 

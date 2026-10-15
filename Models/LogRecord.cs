@@ -24,5 +24,8 @@ public sealed record LogRecord(
     public byte[]? RowLogContents4 { get; init; }
     public byte[]? RowLogContents5 { get; init; }
 
+    /// <summary>Le Log Record binaire entier, gardé pour LOP_MODIFY_COLUMNS seulement (spec03 §3, §6.2).</summary>
+    public byte[]? LogRecordBytes { get; init; }
+
     public bool IsCompensation => Description?.Contains("COMPENSATION", System.StringComparison.Ordinal) == true;
 }

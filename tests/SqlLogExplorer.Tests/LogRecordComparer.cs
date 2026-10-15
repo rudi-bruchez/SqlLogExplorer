@@ -16,7 +16,8 @@ public sealed class LogRecordComparer : IEqualityComparer<LogRecord>
             && x.SlotId == y.SlotId && x.OffsetInRow == y.OffsetInRow && x.ModifySize == y.ModifySize
             && x.NumElements == y.NumElements && x.Description == y.Description && x.TransactionName == y.TransactionName
             && B(x.RowLogContents2, y.RowLogContents2) && B(x.RowLogContents3, y.RowLogContents3)
-            && B(x.RowLogContents4, y.RowLogContents4) && B(x.RowLogContents5, y.RowLogContents5);
+            && B(x.RowLogContents4, y.RowLogContents4) && B(x.RowLogContents5, y.RowLogContents5)
+            && B(x.LogRecordBytes, y.LogRecordBytes);
     }
 
     public int GetHashCode(LogRecord obj) => obj.Lsn.GetHashCode();
