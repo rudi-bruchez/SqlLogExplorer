@@ -354,6 +354,18 @@ public class RowReplayerTests(ITestOutputHelper output)
     }
 
     [Fact]
+    public void UndoingIntoAGhostImage_MeansTheKeyWasInsertedAgain()
+    {
+        // Le delete précédent est hors des enregistrements passés : seul l'octet d'état de l'avant (fantôme, type 6) le trahit.
+        var chain = new[] { Modify(2, "B", [0x7C], [0x30], 0, 1), Delete(3, "D", SpecRow) };
+
+        var r = Replay(chain, 2);
+
+        Assert.Null(r.Before);
+        Assert.Equal("row inserted again after a delete, no image before it", r.Status);
+    }
+
+    [Fact]
     public void RolledBackSelectedRecord_AfterASavepointUndo_IsNotReplayed()
     {
         var outcomes = With(("R", TxOutcome.RolledBack));
@@ -606,5 +618,21 @@ public class RowReplayerTests(ITestOutputHelper output)
 
         Assert.Equal("no full image of this row available", Probe(f, chain, mods[4].Lsn).Status);
         Assert.Equal("no full image of this row available", Probe(f, chain, mods[5].Lsn).Status);
+    }
+
+    [Fact]
+    public void Real_ReinsertModify_WhoseDeleteIsOutsideTheWindow_IsStillRecognised()
+    {
+        var f = FixtureSet.Load("2022", "reinsert_adr");
+        var (_, all) = f.ForTable("dbo.p");
+        var mods = Modifies(all.Where(r => !r.IsCompensation));
+        var chain = all.Where(r => !r.IsCompensation && string.CompareOrdinal(r.Lsn, mods[1].Lsn) >= 0).ToList();   // le delete 0x230:0002 n'y est plus
+
+        Assert.DoesNotContain(chain, r => r.Operation == "LOP_DELETE_ROWS" && string.CompareOrdinal(r.Lsn, mods[1].Lsn) < 0);
+        var r = Probe(f, chain, mods[1].Lsn);
+
+        Assert.Null(r.Before);
+        Assert.Equal("row inserted again after a delete, no image before it", r.Status);
+        Assert.Equal(AnchorKind.None, r.Anchor);
     }
 }

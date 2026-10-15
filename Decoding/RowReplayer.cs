@@ -176,6 +176,8 @@ public static class RowReplayer
                 return new Failure($"chain broken at LSN {step.Record.Lsn}");
             }
             if (IsForwardingStub(row)) return new Failure("row forwarded, not followed");
+            // Fenêtre d'import commencée après le delete : le modify de réutilisation du fantôme (ADR) ouvre la chaîne, et son avant est le fantôme de la vie précédente.
+            if ((row[0] >> 1 & 7) != 0) return new Failure("row inserted again after a delete, no image before it");
             unknown |= step.Outcome == TxOutcome.Unknown;
         }
         var status = kind == AnchorKind.Delete ? $"rebuilt backwards from DELETE at LSN {anchorLsn}" : "rebuilt backwards from the current row";
