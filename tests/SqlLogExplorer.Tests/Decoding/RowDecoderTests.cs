@@ -137,6 +137,48 @@ public class RowDecoderTests
         Assert.Contains(row.Fields, f => f.Role == FieldRole.FixedColumn && f.Offset == 4 && f.Length == 9);
     }
 
+    [Fact]
+    public void SparseColumn_DoesNotThrow_IsFlagged_AndNeighboursStillDecode()   // ligne réelle de SQL Server 2022 : (1, 10, NULL, NULL, 'b1')
+    {
+        var s = new TableSchema(1, "dbo", "sp", 1, 1, new[]
+        {
+            Col(3, "s1", 0, 0, 56, 4), Col(4, "s2", 0, 0, 56, 4),
+            Col(1, "id", 4, 1, 56, 4), Col(2, "a", 8, 2, 56, 4), Col(5, "v", -1, 3, 167, 5) with { CodePage = 1252 },
+        });
+        var row = RowDecoder.Decode(Hex("30000C00010000000A000000030000010015006231"), s);
+
+        Assert.True(row.HasProblem);
+        Assert.Equal(1, V(row, "id")); Assert.Equal(10, V(row, "a")); Assert.Equal("b1", V(row, "v"));
+        Assert.All(new[] { "s1", "s2" }, n =>
+        {
+            Assert.Null(V(row, n));
+            Assert.Equal("sparse column not decoded", row.Columns.Single(c => c.Name == n).Note);
+        });
+    }
+
+    [Fact]
+    public void CompressedTable_IsRejectedWholesale_NotDecodedAsWrongValues()   // ROW : (-8388096, NULL) s'écrit 010204000200000000
+    {
+        var s = new TableSchema(1, "dbo", "cs", 1, 1, new[] { Col(1, "id", -1, 1, 56, 4, keyOrdinal: 1), Col(2, "s", -2, 2, 167, 10) with { CodePage = 1252 } });
+        var row = RowDecoder.Decode(Hex("010204000200000000"), s);
+
+        Assert.True(row.HasProblem);
+        Assert.Empty(row.Columns);
+        Assert.Contains(row.Fields, f => f.Role == FieldRole.Malformed && f.Offset == 0 && f.Length == 9 && f.Problem == "compressed rows are not decoded");
+    }
+
+    [Fact]
+    public void VariableColumnsAndUniqueifier_WithNegativeOffsets_AreNotMistakenForCompression()
+    {
+        var s = new TableSchema(1, "dbo", "v", 1, 1, new[]
+        {
+            Col(1, "u", -1, 1, 56, 4, uniqueifier: true), Col(2, "v1", -2, 2, 167, 5) with { CodePage = 1252 }, Col(3, "x", -3, 3, 56, 4, dropped: true),
+        });
+        var row = RowDecoder.Decode(Hex("30000400030000" + "00" + "0300" + "0000" + "0000"), s);   // seule la décision de compression compte ici
+
+        Assert.DoesNotContain(row.Fields, f => f.Problem == "compressed rows are not decoded");
+    }
+
     // ---- Fixtures : journaux réels de SQL Server 2017 à 2025 (spec03 §10.1) ----
 
     public static TheoryData<string> Versions => new() { "2017", "2019", "2022", "2025" };

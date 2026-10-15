@@ -20,6 +20,11 @@ public static class RowDecoder
 
         var a = row[0];
         var type = a >> 1 & 7;
+        if (schema is not null && IsCompressed(schema))
+        {
+            fields.Add(new DecodedField(0, row.Length, FieldRole.Malformed, Problem: "compressed rows are not decoded"));
+            return new DecodedRow(type, fields, columns);
+        }
         fields.Add(new DecodedField(0, 1, FieldRole.StatusA, Value: a));
         fields.Add(new DecodedField(1, 1, FieldRole.StatusB, Value: row[1]));
         if (type != 0)
@@ -110,9 +115,26 @@ public static class RowDecoder
         return new DecodedRow(type, fields.OrderBy(f => f.Offset).ToList(), columns);
     }
 
+    // Dans une partition compressée (ROW ou PAGE), toutes les colonnes ont un leaf_offset négatif, y compris celles d'un type de longueur fixe.
+    private static bool IsCompressed(TableSchema schema) =>
+        schema.Columns.Any(c => !c.IsDropped && !c.IsUniqueifier && c.LeafOffset < 0 && !IsVariableType(c.SystemTypeId));
+
+    // varchar, nvarchar, varbinary, text, ntext, image, sql_variant, xml, types CLR.
+    private static bool IsVariableType(int systemTypeId) => systemTypeId is 167 or 231 or 165 or 35 or 99 or 34 or 98 or 241 or 240;
+
     private static void DecodeColumn(byte[] row, SchemaColumn c, int n, Func<int, bool> isNull, int fixedEnd, int varStart,
         List<(int End, bool OffRow)> ends, List<DecodedField> fields, List<DecodedColumn> columns, bool[] claimed)
     {
+        if (c.LeafOffset == 0)   // colonne éparse (SPARSE) : ses octets sont dans le vecteur épars, que ce décodeur ne lit pas
+        {
+            if (!c.IsDropped)
+            {
+                columns.Add(new DecodedColumn(c.Name, null, "sparse column not decoded"));
+                fields.Add(new DecodedField(row.Length, 0, FieldRole.Malformed, c.Name, Problem: "sparse column not decoded"));
+            }
+            return;
+        }
+
         if (c.LeafNullBit > n)   // colonne ajoutée après l'écriture de la ligne : son leaf_offset n'est jamais lu
         {
             if (!c.IsDropped)
@@ -138,7 +160,10 @@ public static class RowDecoder
         var j = -c.LeafOffset - 1;
         if (j >= ends.Count)   // absente du tableau d'offsets (ou zone variable absente) : NULL si le bit le dit, sinon vide
         {
-            if (!c.IsDropped) columns.Add(new DecodedColumn(c.Name, isNull(c.LeafNullBit) ? null : SafeDecode(c, ReadOnlySpan<byte>.Empty).Value));
+            if (c.IsDropped) return;
+            var (absent, absentProblem) = isNull(c.LeafNullBit) ? (null, null) : SafeDecode(c, ReadOnlySpan<byte>.Empty);
+            columns.Add(new DecodedColumn(c.Name, absent, absentProblem));
+            if (absentProblem is not null) fields.Add(new DecodedField(row.Length, 0, FieldRole.Malformed, c.Name, Problem: absentProblem));
             return;
         }
         var start = j == 0 ? varStart : ends[j - 1].End;
