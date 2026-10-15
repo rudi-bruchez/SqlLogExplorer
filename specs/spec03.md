@@ -1,6 +1,6 @@
 # Functional Specification 03: RowLog Contents Decoder
 
-Status: design approved in conversation on 2026-10-15, revised twice the same day after two five-reader reviews (agy and codex with two prompts each, one Claude reader), all of whom ran their checks on SQL Server 2017, 2019, 2022 and 2025. Version 6, after a third panel, the plan's panel, and the layout research of the plan's task 4 (`docs/research/rowlog-layouts.md`).
+Status: design approved in conversation on 2026-10-15, revised twice the same day after two five-reader reviews (agy and codex with two prompts each, one Claude reader), all of whom ran their checks on SQL Server 2017, 2019, 2022 and 2025. Version 7, after a third panel, the plan's panel, the layout research of the plan's task 4 (`docs/research/rowlog-layouts.md`), and the review of the replay engine (§7.3, §7.4).
 
 Supersedes the decoding parts of spec01 (§5, §7.3, §7.4) and moves `UPDATE` reconstruction from post-MVP into this scope.
 
@@ -205,13 +205,13 @@ Anchor 3 reads the server, so it is not tried on selection: the inspector offers
 Transactions are classified from the cache:
 
 - rolled back: the transaction has an `LOP_ABORT_XACT`;
-- partly rolled back: it commits, and holds a compensation record or an `LOP_CTR_NEST_ABORT` (a rollback to a savepoint, or a statement rolled back inside the transaction; under ADR there is no compensation record to apply, §2);
+- partly rolled back: it commits, and holds a compensation of a row operation (`LOP_INSERT_ROWS`, `LOP_DELETE_ROWS`, `LOP_MODIFY_ROW`, `LOP_MODIFY_COLUMNS` with `Description` = `COMPENSATION`; under ADR, `LOP_CTR_NEST_ABORT` and `LOP_LOCK_XACT` also carry that description and are not row compensations) or an `LOP_CTR_NEST_ABORT` (a rollback to a savepoint, or a statement rolled back inside the transaction; under ADR there is no compensation record to apply, §2);
 - committed: it has an `LOP_COMMIT_XACT` and none of the above;
 - unknown: neither its commit nor its abort is in the window.
 
-A rolled-back transaction's records, compensation records included, are left out of every chain: their net effect on the row is nothing. When the selected record itself belongs to a rolled-back transaction, the chain is built without the other rolled-back transactions and stops at the selected record, so the user sees what the change did before it was undone, labelled "rolled back".
+A rolled-back transaction's records, compensation records included, are left out of every chain: their net effect on the row is nothing. When the selected record itself belongs to a rolled-back transaction, the chain is built without the other rolled-back transactions and stops at the selected record, so the user sees what the change did before it was undone, labelled "rolled back". If that transaction also holds, before the selected record, a compensation of a row operation or an `LOP_CTR_NEST_ABORT` (a savepoint rolled back first), the result is "partial rollback before the selected record, not replayed": the records it undid would otherwise be replayed as if they had stood.
 
-A record of a partly rolled-back transaction ends the chain at that record ("partial rollback at LSN x, not replayed"): which of its changes survived cannot be told from the row's records alone. Under ADR the undone bytes also leak into later records of the row (§2). A partly rolled-back transaction that holds an `LOP_CTR_NEST_ABORT` and no compensation record at all is such an ADR revert: when one of its records is anywhere in the row's chain, before or after the selected record, every replay of that row stops with that status, and a delete image of the row is shown with the warning "may hold values undone by a partial rollback". Without ADR the compensation records restore the bytes, and stopping at the record is enough.
+A record of a partly rolled-back transaction ends the chain at that record ("partial rollback at LSN x, not replayed"): which of its changes survived cannot be told from the row's records alone. Under ADR the undone bytes also leak into later records of the row (§2). An ADR revert is a transaction that holds an `LOP_CTR_NEST_ABORT`, or that is rolled back whole, and logs no compensation of a row operation for the row: its undone bytes stay in the page and reach later records. Whatever its outcome, committed or rolled back, when one of its records is anywhere in the row's chain, before or after the selected record, every replay of that row stops with the status "ADR revert in the chain, not replayed", and a delete image of the row is shown with the warning "may hold values undone by a partial rollback". Without ADR the compensation records restore the bytes, and stopping at the record is enough.
 
 Records of a transaction of unknown outcome are applied and the result is labelled "includes changes of unknown outcome".
 
@@ -225,7 +225,7 @@ Every modify record shown, selected or replayed, carries the classification of i
 
 ### 7.4 Ends of a chain
 
-- `LOP_DELETE_ROWS` of the row ends it forwards; `LOP_INSERT_ROWS` ends it backwards. A page split's moved row is logged as an insert (§2): it ends a backward chain at the split, with a correct image, so the result stays correct and only starts later.
+- `LOP_DELETE_ROWS` of the row ends it forwards; `LOP_INSERT_ROWS` ends it backwards. A delete also separates two lives of a key: a key deleted and inserted again can be logged, under ADR, as an `LOP_MODIFY_ROW` on the ghost record rather than an insert, so the first record of the key after a delete is the start of a new life. Backwards, the chain stops there with "row inserted again after a delete, no image before it", and no record before that delete is ever replayed into the new life. A page split's moved row is logged as an insert (§2): it ends a backward chain at the split, with a correct image, so the result stays correct and only starts later.
 - A heap modification whose after bytes are a forwarding stub (record type 2) ends it with "row forwarded, not followed".
 - A modify record whose layout is unknown (§6.2) ends it with "modification not decodable at LSN x".
 - A record of a partly rolled-back transaction ends it (§7.3).
