@@ -1,0 +1,14 @@
+CREATE TABLE dbo.ac (id int NOT NULL PRIMARY KEY, a int NULL);
+INSERT dbo.ac VALUES (1, 10);
+ALTER TABLE dbo.ac ADD n int NOT NULL CONSTRAINT df_ac_n DEFAULT 7;
+INSERT dbo.ac (id, a) VALUES (2, 20);
+DELETE dbo.ac WHERE id = 1;
+CREATE TABLE dbo.dc (id int NOT NULL PRIMARY KEY, x int NULL, y int NULL);
+ALTER TABLE dbo.dc DROP COLUMN x;
+INSERT dbo.dc VALUES (1, 5);
+EXEC dbo.SnapshotSchema;
+CREATE TABLE dbo.rb (id int NOT NULL PRIMARY KEY, v int NULL);
+INSERT dbo.rb VALUES (1, 10);
+EXEC dbo.SnapshotSchema;
+ALTER INDEX ALL ON dbo.rb REBUILD;
+UPDATE dbo.rb SET v = 11 WHERE id = 1;
