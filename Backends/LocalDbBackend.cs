@@ -41,15 +41,8 @@ public sealed class LocalDbBackend : ILogParserBackend
             await using var reader = await cmd.ExecuteReaderAsync(CommandBehavior.SequentialAccess, ct);
             while (await reader.ReadAsync(ct))
             {
-                // Accès séquentiel : lire les colonnes dans l'ordre du SELECT (0..6).
-                yield return new LogRecord(
-                    Lsn:             reader.GetString(0),
-                    Operation:       reader.GetString(1),
-                    Context:         reader.IsDBNull(2) ? null : reader.GetString(2),
-                    TransactionId:   reader.IsDBNull(3) ? null : reader.GetString(3),
-                    AllocUnitName:   reader.IsDBNull(4) ? null : reader.GetString(4),
-                    RowLogContents0: reader.IsDBNull(5) ? null : (byte[])reader.GetValue(5),
-                    RowLogContents1: reader.IsDBNull(6) ? null : (byte[])reader.GetValue(6));
+                // Accès séquentiel : LogColumns.Read lit les colonnes dans l'ordre du SELECT.
+                yield return LogColumns.Read(reader);
             }
         }
     }

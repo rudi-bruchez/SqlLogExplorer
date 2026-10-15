@@ -19,8 +19,10 @@ public sealed class LogQuery
         await using var cmd = _connection.CreateCommand();
         var where = AppendFilter(cmd, filter);
         cmd.CommandText =
-            "SELECT LSN, Operation, Context, TransactionId, AllocUnitName, RowLogContents0, RowLogContents1 " +
-            $"FROM LogRecords{where} ORDER BY Id LIMIT $limit OFFSET $offset;";
+            "SELECT LSN, Operation, Context, TransactionId, AllocUnitName, RowLogContents0, RowLogContents1, " +
+            "AllocUnitId, PartitionId, PageId, SlotId, OffsetInRow, ModifySize, NumElements, " +
+            "Description, TransactionName, RowLogContents2, RowLogContents3, RowLogContents4, RowLogContents5 " +
+            $"FROM LogRecords{where} ORDER BY LSN LIMIT $limit OFFSET $offset;";
         cmd.Parameters.AddWithValue("$limit", limit);
         cmd.Parameters.AddWithValue("$offset", offset);
 
@@ -28,16 +30,26 @@ public sealed class LogQuery
         await using var reader = await cmd.ExecuteReaderAsync(ct);
         while (await reader.ReadAsync(ct))
         {
-            list.Add(new LogRecord(
-                reader.GetString(0),
-                reader.GetString(1),
-                reader.IsDBNull(2) ? null : reader.GetString(2),
-                reader.IsDBNull(3) ? null : reader.GetString(3),
-                reader.IsDBNull(4) ? null : reader.GetString(4),
-                reader.IsDBNull(5) ? null : (byte[])reader[5],
-                reader.IsDBNull(6) ? null : (byte[])reader[6]));
+            list.Add(ReadRecord(reader));
         }
         return list;
+    }
+
+    /// <summary>Lit une ligne dans l'ordre de colonnes du SELECT de <see cref="GetPageAsync"/>.</summary>
+    private static LogRecord ReadRecord(SqliteDataReader r)
+    {
+        static byte[]? Bytes(SqliteDataReader r, int i) => r.IsDBNull(i) ? null : (byte[])r[i];
+        static string? Text(SqliteDataReader r, int i) => r.IsDBNull(i) ? null : r.GetString(i);
+        static long? Long(SqliteDataReader r, int i) => r.IsDBNull(i) ? null : r.GetInt64(i);
+        static int? Int(SqliteDataReader r, int i) => r.IsDBNull(i) ? null : r.GetInt32(i);
+
+        return new LogRecord(r.GetString(0), r.GetString(1), Text(r, 2), Text(r, 3), Text(r, 4), Bytes(r, 5), Bytes(r, 6))
+        {
+            AllocUnitId = Long(r, 7), PartitionId = Long(r, 8), PageId = Text(r, 9), SlotId = Int(r, 10),
+            OffsetInRow = Int(r, 11), ModifySize = Int(r, 12), NumElements = Int(r, 13),
+            Description = Text(r, 14), TransactionName = Text(r, 15),
+            RowLogContents2 = Bytes(r, 16), RowLogContents3 = Bytes(r, 17), RowLogContents4 = Bytes(r, 18), RowLogContents5 = Bytes(r, 19),
+        };
     }
 
     public async Task<IReadOnlyList<OperationCount>> CountByOperationAsync(

@@ -36,33 +36,20 @@ public sealed class LiveDatabaseBackend : ILogParserBackend
         // fn_dblog(NULL,NULL) = log actif complet ; fn_dblog(@start,@end) = borné à la fenêtre résolue (spec §3.1).
         var bounds = _range is null ? "NULL, NULL" : "@start, @end";
         cmd.CommandText = $"""
-            SELECT [Current LSN],
-                   [Operation],
-                   [Context],
-                   [Transaction ID],
-                   [AllocUnitName],
-                   [RowLog Contents 0],
-                   [RowLog Contents 1]
+            SELECT {LogColumns.SelectList}
             FROM sys.fn_dblog({bounds});
             """;
         if (_range is not null)
         {
-            cmd.Parameters.Add(new SqlParameter("@start", _range.Start));
-            cmd.Parameters.Add(new SqlParameter("@end", _range.End));
+            cmd.Parameters.Add(new SqlParameter("@start", Lsn.ToFnDblogArgument(_range.Start)));
+            cmd.Parameters.Add(new SqlParameter("@end", Lsn.ToFnDblogArgument(_range.End)));
         }
         cmd.CommandTimeout = 0;
 
         await using var reader = await cmd.ExecuteReaderAsync(CommandBehavior.SequentialAccess, ct);
         while (await reader.ReadAsync(ct))
         {
-            yield return new LogRecord(
-                Lsn:             reader.GetString(0),
-                Operation:       reader.GetString(1),
-                Context:         reader.IsDBNull(2) ? null : reader.GetString(2),
-                TransactionId:   reader.IsDBNull(3) ? null : reader.GetString(3),
-                AllocUnitName:   reader.IsDBNull(4) ? null : reader.GetString(4),
-                RowLogContents0: reader.IsDBNull(5) ? null : (byte[])reader.GetValue(5),
-                RowLogContents1: reader.IsDBNull(6) ? null : (byte[])reader.GetValue(6));
+            yield return LogColumns.Read(reader);
         }
     }
 

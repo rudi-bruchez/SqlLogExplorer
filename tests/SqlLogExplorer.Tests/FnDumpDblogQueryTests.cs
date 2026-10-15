@@ -5,17 +5,14 @@ namespace SqlLogExplorer.Tests;
 
 public class FnDumpDblogQueryTests
 {
-    [Fact]
-    public void Build_ContainsRequiredColumnsAndFunction()
-    {
-        var sql = FnDumpDblogQuery.Build("@path");
-
-        Assert.Contains("[Current LSN]", sql);
-        Assert.Contains("[Transaction ID]", sql);
-        Assert.Contains("[RowLog Contents 0]", sql);
-        Assert.Contains("[RowLog Contents 1]", sql);
-        Assert.Contains("sys.fn_dump_dblog(NULL, NULL, N'DISK', 1, @path,", sql);
-    }
+    [Theory]
+    [InlineData("[Current LSN]")] [InlineData("[Transaction ID]")] [InlineData("[AllocUnitId]")]
+    [InlineData("[PartitionId]")] [InlineData("[Page ID]")] [InlineData("[Slot ID]")]
+    [InlineData("[Offset in Row]")] [InlineData("[Modify Size]")] [InlineData("[Num Elements]")]
+    [InlineData("[Description]")] [InlineData("[Transaction Name]")]
+    [InlineData("[RowLog Contents 0]")] [InlineData("[RowLog Contents 5]")]
+    public void Build_SelectsColumn(string column)
+        => Assert.Contains(column, FnDumpDblogQuery.Build("@path"));
 
     [Fact]
     public void Build_EmitsRequestedNumberOfDefaults()

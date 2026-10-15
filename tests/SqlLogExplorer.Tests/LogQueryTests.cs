@@ -28,8 +28,8 @@ public class LogQueryTests
         var page = await query.GetPageAsync(offset: 2, limit: 2);
 
         Assert.Equal(2, page.Count);
-        Assert.Equal("lsn2", page[0].Lsn);
-        Assert.Equal("lsn3", page[1].Lsn);
+        Assert.Equal("LSN2", page[0].Lsn);
+        Assert.Equal("LSN3", page[1].Lsn);
     }
 
     [Fact]
@@ -94,5 +94,20 @@ public class LogQueryTests
 
         Assert.Contains(result, x => x.AllocUnitName == "dbo.Clients" && x.Operation == "LOP_INSERT_ROWS" && x.Count == 5);
         Assert.Contains(result, x => x.AllocUnitName == "dbo.Orders"  && x.Operation == "LOP_DELETE_ROWS" && x.Count == 3);
+    }
+
+    [Fact]
+    public async Task GetPageAsync_OrdersByLsnNotInsertionOrder()
+    {
+        await using var cache = await LogCache.CreateAsync(Path.Combine(Path.GetTempPath(), $"sqllogexp_{Guid.NewGuid():N}.db"));
+        await cache.InsertBatchAsync(new[]
+        {
+            new Models.LogRecord("0000002C:00000010:0001", "LOP_INSERT_ROWS", null, null, null, null, null),
+            new Models.LogRecord("0000002b:00000010:0001", "LOP_INSERT_ROWS", null, null, null, null, null),
+        });
+
+        var page = await new LogQuery(cache.Connection).GetPageAsync(0, 10);
+
+        Assert.Equal(new[] { "0000002B:00000010:0001", "0000002C:00000010:0001" }, page.Select(r => r.Lsn));
     }
 }

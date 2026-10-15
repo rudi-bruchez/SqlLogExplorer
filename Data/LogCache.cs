@@ -40,18 +40,34 @@ public sealed class LogCache : IAsyncDisposable, IDisposable
 
             CREATE TABLE IF NOT EXISTS LogRecords (
                 Id              INTEGER PRIMARY KEY AUTOINCREMENT,
-                LSN             TEXT NOT NULL,
+                LSN             TEXT NOT NULL UNIQUE,
                 Operation       TEXT NOT NULL,
                 Context         TEXT,
                 TransactionId   TEXT,
                 AllocUnitName   TEXT,
                 RowLogContents0 BLOB,
-                RowLogContents1 BLOB
+                RowLogContents1 BLOB,
+                AllocUnitId     INTEGER,
+                PartitionId     INTEGER,
+                PageId          TEXT,
+                SlotId          INTEGER,
+                OffsetInRow     INTEGER,
+                ModifySize      INTEGER,
+                NumElements     INTEGER,
+                Description     TEXT,
+                TransactionName TEXT,
+                RowLogContents2 BLOB,
+                RowLogContents3 BLOB,
+                RowLogContents4 BLOB,
+                RowLogContents5 BLOB,
+                RowKey          TEXT
             );
             CREATE INDEX IF NOT EXISTS IX_LogRecords_AllocUnitName ON LogRecords(AllocUnitName);
             CREATE INDEX IF NOT EXISTS IX_LogRecords_TransactionId ON LogRecords(TransactionId);
             CREATE INDEX IF NOT EXISTS IX_LogRecords_Operation     ON LogRecords(Operation);
             CREATE INDEX IF NOT EXISTS IX_LogRecords_Alloc_Op      ON LogRecords(AllocUnitName, Operation);
+            CREATE INDEX IF NOT EXISTS IX_LogRecords_Alloc_Key_Lsn       ON LogRecords(AllocUnitId, RowKey, LSN);
+            CREATE INDEX IF NOT EXISTS IX_LogRecords_Alloc_Page_Slot_Lsn ON LogRecords(AllocUnitId, PageId, SlotId, LSN);
             """;
         await using var cmd = connection.CreateCommand();
         cmd.CommandText = sql;
@@ -65,36 +81,88 @@ public sealed class LogCache : IAsyncDisposable, IDisposable
         await using var tx = (SqliteTransaction)await _connection.BeginTransactionAsync(ct);
         await using var cmd = _connection.CreateCommand();
         cmd.Transaction = tx;
+        // OR IGNORE : deux .trn qui se recouvrent ne doivent pas dupliquer une modification (spec03 §3).
         cmd.CommandText = """
-            INSERT INTO LogRecords (LSN, Operation, Context, TransactionId, AllocUnitName, RowLogContents0, RowLogContents1)
-            VALUES ($lsn, $op, $ctx, $txid, $alloc, $rlc0, $rlc1);
+            INSERT OR IGNORE INTO LogRecords
+                (LSN, Operation, Context, TransactionId, AllocUnitName, RowLogContents0, RowLogContents1,
+                 AllocUnitId, PartitionId, PageId, SlotId, OffsetInRow, ModifySize, NumElements,
+                 Description, TransactionName, RowLogContents2, RowLogContents3, RowLogContents4, RowLogContents5)
+            VALUES
+                ($lsn, $op, $ctx, $txid, $alloc, $rlc0, $rlc1,
+                 $auid, $pid, $page, $slot, $off, $msize, $nel,
+                 $desc, $txname, $rlc2, $rlc3, $rlc4, $rlc5);
             """;
 
-        var pLsn   = AddParam(cmd, "$lsn");
-        var pOp    = AddParam(cmd, "$op");
-        var pCtx   = AddParam(cmd, "$ctx");
-        var pTxId  = AddParam(cmd, "$txid");
-        var pAlloc = AddParam(cmd, "$alloc");
-        var pRlc0  = AddParam(cmd, "$rlc0");
-        var pRlc1  = AddParam(cmd, "$rlc1");
+        var pLsn    = AddParam(cmd, "$lsn");
+        var pOp     = AddParam(cmd, "$op");
+        var pCtx    = AddParam(cmd, "$ctx");
+        var pTxId   = AddParam(cmd, "$txid");
+        var pAlloc  = AddParam(cmd, "$alloc");
+        var pRlc0   = AddParam(cmd, "$rlc0");
+        var pRlc1   = AddParam(cmd, "$rlc1");
+        var pAuId   = AddParam(cmd, "$auid");
+        var pPid    = AddParam(cmd, "$pid");
+        var pPage   = AddParam(cmd, "$page");
+        var pSlot   = AddParam(cmd, "$slot");
+        var pOff    = AddParam(cmd, "$off");
+        var pMSize  = AddParam(cmd, "$msize");
+        var pNel    = AddParam(cmd, "$nel");
+        var pDesc   = AddParam(cmd, "$desc");
+        var pTxName = AddParam(cmd, "$txname");
+        var pRlc2   = AddParam(cmd, "$rlc2");
+        var pRlc3   = AddParam(cmd, "$rlc3");
+        var pRlc4   = AddParam(cmd, "$rlc4");
+        var pRlc5   = AddParam(cmd, "$rlc5");
 
         long inserted = 0;
         cmd.Prepare();
         foreach (var r in records)
         {
             ct.ThrowIfCancellationRequested();
-            pLsn.Value   = r.Lsn;
-            pOp.Value    = r.Operation;
-            pCtx.Value   = (object?)r.Context ?? DBNull.Value;
-            pTxId.Value  = (object?)r.TransactionId ?? DBNull.Value;
-            pAlloc.Value = (object?)r.AllocUnitName ?? DBNull.Value;
-            pRlc0.Value  = (object?)r.RowLogContents0 ?? DBNull.Value;
-            pRlc1.Value  = (object?)r.RowLogContents1 ?? DBNull.Value;
-            inserted += cmd.ExecuteNonQuery();
+            pLsn.Value    = Lsn.Normalize(r.Lsn);
+            pOp.Value     = r.Operation;
+            pCtx.Value    = (object?)r.Context ?? DBNull.Value;
+            pTxId.Value   = (object?)r.TransactionId ?? DBNull.Value;
+            pAlloc.Value  = (object?)r.AllocUnitName ?? DBNull.Value;
+            pRlc0.Value   = (object?)r.RowLogContents0 ?? DBNull.Value;
+            pRlc1.Value   = (object?)r.RowLogContents1 ?? DBNull.Value;
+            pAuId.Value   = (object?)r.AllocUnitId ?? DBNull.Value;
+            pPid.Value    = (object?)r.PartitionId ?? DBNull.Value;
+            pPage.Value   = (object?)r.PageId ?? DBNull.Value;
+            pSlot.Value   = (object?)r.SlotId ?? DBNull.Value;
+            pOff.Value    = (object?)r.OffsetInRow ?? DBNull.Value;
+            pMSize.Value  = (object?)r.ModifySize ?? DBNull.Value;
+            pNel.Value    = (object?)r.NumElements ?? DBNull.Value;
+            pDesc.Value   = (object?)r.Description ?? DBNull.Value;
+            pTxName.Value = (object?)r.TransactionName ?? DBNull.Value;
+            pRlc2.Value   = (object?)r.RowLogContents2 ?? DBNull.Value;
+            pRlc3.Value   = (object?)r.RowLogContents3 ?? DBNull.Value;
+            pRlc4.Value   = (object?)r.RowLogContents4 ?? DBNull.Value;
+            pRlc5.Value   = (object?)r.RowLogContents5 ?? DBNull.Value;
+            inserted += cmd.ExecuteNonQuery(); // 0 pour une ligne ignorée.
         }
 
         await tx.CommitAsync(ct);
         return inserted;
+    }
+
+    /// <summary>Clés canoniques calculées par DecodingService (spec03 §7.1), indexées pour les chaînes.</summary>
+    public async Task SetRowKeysAsync(IReadOnlyList<(string Lsn, string? RowKey)> keys, CancellationToken ct = default)
+    {
+        await using var tx = (SqliteTransaction)await _connection.BeginTransactionAsync(ct);
+        await using var cmd = _connection.CreateCommand();
+        cmd.Transaction = tx;
+        cmd.CommandText = "UPDATE LogRecords SET RowKey = $key WHERE LSN = $lsn;";
+        var pKey = AddParam(cmd, "$key");
+        var pLsn = AddParam(cmd, "$lsn");
+        cmd.Prepare();
+        foreach (var (lsn, key) in keys)
+        {
+            pLsn.Value = lsn;
+            pKey.Value = (object?)key ?? DBNull.Value;
+            cmd.ExecuteNonQuery();
+        }
+        await tx.CommitAsync(ct);
     }
 
     private static SqliteParameter AddParam(SqliteCommand cmd, string name)

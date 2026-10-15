@@ -16,13 +16,7 @@ public static class FnDumpDblogQuery
     {
         var defaults = string.Join(", ", Enumerable.Repeat("DEFAULT", defaultParameterCount));
         return $"""
-            SELECT [Current LSN]        AS Lsn,
-                   [Operation]          AS Operation,
-                   [Context]            AS Context,
-                   [Transaction ID]     AS TransactionId,
-                   [AllocUnitName]      AS AllocUnitName,
-                   [RowLog Contents 0]  AS RowLogContents0,
-                   [RowLog Contents 1]  AS RowLogContents1
+            SELECT {LogColumns.SelectList}
             FROM sys.fn_dump_dblog(NULL, NULL, N'DISK', 1, {pathParameterName}, {defaults});
             """;
     }
