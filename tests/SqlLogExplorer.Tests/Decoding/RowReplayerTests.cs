@@ -38,7 +38,7 @@ public class RowReplayerTests(ITestOutputHelper output)
 
     private static ReplayResult Replay(IReadOnlyList<LogRecord> chain, int selected, IReadOnlyDictionary<string, TxOutcome>? outcomes = null,
         IReadOnlySet<string>? reverts = null, byte[]? currentRow = null, IReadOnlyDictionary<string, string>? firstUndoLsns = null) =>
-        RowReplayer.Replay(chain, L(selected), outcomes ?? AllCommitted, reverts ?? NoReverts, currentRow, firstUndoLsns);
+        RowReplayer.Replay(chain, L(selected), outcomes ?? AllCommitted, reverts ?? NoReverts, firstUndoLsns ?? new Dictionary<string, string>(), currentRow);
 
     private static IReadOnlyDictionary<string, TxOutcome> With(params (string Tx, TxOutcome Outcome)[] more)
     {
@@ -487,7 +487,7 @@ public class RowReplayerTests(ITestOutputHelper output)
         ];
         for (var i = 0; i < expected.Length; i++)
         {
-            var r = RowReplayer.Replay(chain, modifies[i].Lsn, outcomes, reverts);
+            var r = RowReplayer.Replay(chain, modifies[i].Lsn, outcomes, reverts, RowReplayer.FirstUndoLsns(fixture.Log));
             Assert.True(r.After is not null, $"{version} modify #{i}: {r.Status}");
             Assert.Equal(expected[i], Values(r.After!, schema));
             Assert.Equal(TxOutcome.Committed, outcomes[modifies[i].TransactionId!]);
@@ -497,7 +497,7 @@ public class RowReplayerTests(ITestOutputHelper output)
 
         // La transaction annulée : l'enregistrement choisi montre son effet avant l'annulation.
         Assert.Equal(TxOutcome.RolledBack, outcomes[modifies[6].TransactionId!]);
-        var rolledBack = RowReplayer.Replay(chain, modifies[6].Lsn, outcomes, reverts);
+        var rolledBack = RowReplayer.Replay(chain, modifies[6].Lsn, outcomes, reverts, RowReplayer.FirstUndoLsns(fixture.Log));
         Assert.Equal("id=1, a=99, b=zz, c=True, d=True", Values(rolledBack.After!, schema));
         Assert.StartsWith("rebuilt forwards", rolledBack.Status);
 
@@ -507,7 +507,7 @@ public class RowReplayerTests(ITestOutputHelper output)
         Assert.Equal(TxOutcome.PartlyRolledBack, outcomes[savepoint]);
         Assert.DoesNotContain(savepoint, reverts);
         foreach (var r in modifies.Skip(7))
-            Assert.Equal($"partial rollback at LSN {modifies[7].Lsn}, not replayed", RowReplayer.Replay(chain, r.Lsn, outcomes, reverts).Status);
+            Assert.Equal($"partial rollback at LSN {modifies[7].Lsn}, not replayed", RowReplayer.Replay(chain, r.Lsn, outcomes, reverts, RowReplayer.FirstUndoLsns(fixture.Log)).Status);
     }
 
     [Theory, MemberData(nameof(AdrVersions))]
@@ -527,13 +527,13 @@ public class RowReplayerTests(ITestOutputHelper output)
         output.WriteLine($"{version}: revert at {revert.Lsn} ({revert.Operation})");
 
         foreach (var m in modifies)
-            Assert.Equal("ADR revert in the chain, not replayed", RowReplayer.Replay(chain, m.Lsn, outcomes, reverts).Status);
+            Assert.Equal("ADR revert in the chain, not replayed", RowReplayer.Replay(chain, m.Lsn, outcomes, reverts, RowReplayer.FirstUndoLsns(fixture.Log)).Status);
     }
 
     // ---- Chaînes réelles de la revue (2022, capturées avec et sans ADR, une ligne chacune) ----
 
     private static ReplayResult Probe(Fixture f, IReadOnlyList<LogRecord> chain, string lsn) =>
-        RowReplayer.Replay(chain, lsn, RowReplayer.Classify(f.Log), RowReplayer.AdrReverts(f.Log), null, RowReplayer.FirstUndoLsns(f.Log));
+        RowReplayer.Replay(chain, lsn, RowReplayer.Classify(f.Log), RowReplayer.AdrReverts(f.Log), RowReplayer.FirstUndoLsns(f.Log));
 
     private static List<LogRecord> Modifies(IEnumerable<LogRecord> chain) =>
         chain.Where(r => r.Operation is "LOP_MODIFY_ROW" or "LOP_MODIFY_COLUMNS").ToList();

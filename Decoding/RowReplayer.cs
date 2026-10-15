@@ -35,11 +35,11 @@ public static class RowReplayer
     /// une transaction absente du dictionnaire, ou un TransactionId null, vaut Unknown.
     /// currentRow : image de l'ancre 3 (après le dernier enregistrement de chain), ou null.
     /// firstUndoLsns : par Transaction ID, le LSN de la première compensation de ligne ou du premier LOP_CTR_NEST_ABORT (FirstUndoLsns) ;
-    /// sans lui, un enregistrement choisi d'une transaction annulée qui a déjà annulé un point de sauvegarde n'est pas reconnu (spec03 §7.3).
+    /// obligatoire : sans lui, un enregistrement choisi d'une transaction annulée qui a déjà annulé un point de sauvegarde ne serait pas reconnu (spec03 §7.3).
     /// selectedLsn et les LSN de la chaîne sont normalisés (Lsn.Normalize) : la comparaison est ordinale.</summary>
     public static ReplayResult Replay(IReadOnlyList<LogRecord> chain, string selectedLsn,
-        IReadOnlyDictionary<string, TxOutcome> outcomes, IReadOnlySet<string> adrReverts, byte[]? currentRow = null,
-        IReadOnlyDictionary<string, string>? firstUndoLsns = null)
+        IReadOnlyDictionary<string, TxOutcome> outcomes, IReadOnlySet<string> adrReverts,
+        IReadOnlyDictionary<string, string> firstUndoLsns, byte[]? currentRow = null)
     {
         TxOutcome OutcomeOf(LogRecord r) =>
             r.TransactionId is not null && outcomes.TryGetValue(r.TransactionId, out var o) ? o : TxOutcome.Unknown;
@@ -53,7 +53,7 @@ public static class RowReplayer
 
         // Une transaction annulée qui a défait un point de sauvegarde avant l'enregistrement choisi : ce qu'elle a défait serait rejoué comme s'il tenait (§7.3).
         if (OutcomeOf(selected) == TxOutcome.RolledBack && selected.TransactionId is not null
-            && firstUndoLsns is not null && firstUndoLsns.TryGetValue(selected.TransactionId, out var undo)
+            && firstUndoLsns.TryGetValue(selected.TransactionId, out var undo)
             && string.CompareOrdinal(undo, selected.Lsn) < 0)
             return Fail("partial rollback before the selected record, not replayed");
 
