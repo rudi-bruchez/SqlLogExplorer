@@ -8,7 +8,7 @@ Architecture: A pure `Decoding/` folder (no SQL client, no UI) holds the schema 
 
 Tech Stack: .NET 10, C# (nullable on), Avalonia 12 + CommunityToolkit.Mvvm, Microsoft.Data.SqlClient 7, Microsoft.Data.Sqlite 10, xUnit 2.9, podman with `mcr.microsoft.com/mssql/server:{2017,2019,2022,2025}-latest`.
 
-Spec: `specs/spec03.md` (version 4). Read it before your task; section numbers below refer to it.
+Spec: `specs/spec03.md` (version 5). Read it before your task; section numbers below refer to it.
 
 ## Global Constraints
 
@@ -19,7 +19,7 @@ Spec: `specs/spec03.md` (version 4). Read it before your task; section numbers b
 - The decoder never throws towards the UI (spec §8): malformed input yields fields with `FieldRole.Malformed` and a `Problem` text.
 - LSNs are stored uppercase (`Lsn.Normalize`) and passed to `fn_dblog` only in decimal form (`Lsn.ToFnDblogArgument`), spec §2 and §3.
 - Every ordering of log records uses `LSN`, never `Id` (spec §3).
-- Integration tests use `[IntegrationFact]` (skipped unless `SQLLOGEXPLORER_RUN_INTEGRATION=1`) and read the server from `SQLLOGEXPLORER_TEST_SQL`, a connection string to `master` as `sa`, produced by `tests/fixtures/sqlserver.sh` (Task 3). Start the server and run the tests in ONE shell invocation: shell state does not survive between tool calls, and a test run without the variables skips every integration test and still prints success.
+- Integration tests use `[IntegrationFact]` (skipped unless `SQLLOGEXPLORER_RUN_INTEGRATION=1`) and read the server from `SQLLOGEXPLORER_TEST_SQL`, a connection string to `master` as `sa`, produced by `tests/fixtures/sqlserver.sh` (Task 1). Start the server and run the tests in ONE shell invocation: shell state does not survive between tool calls, and a test run without the variables skips every integration test and still prints success.
 - Commit messages: a subject line, then prose explaining why. No `Co-Authored-By`, no `Generated with`, no attribution trailer of any kind.
 - Never `git checkout` or `git restore` a file that holds uncommitted work.
 
@@ -68,9 +68,9 @@ Spec: `specs/spec03.md` (version 4). Read it before your task; section numbers b
 Spec §3. Extends what is imported, fixes LSN handling, and makes the cache ready for replay.
 
 Files:
-- Create: `Models/Lsn.cs`, `Backends/LogColumns.cs`
+- Create: `Models/Lsn.cs`, `Backends/LogColumns.cs`, `tests/fixtures/sqlserver.sh`
 - Modify: `Models/LogRecord.cs`, `Backends/LiveDatabaseBackend.cs`, `Backends/LocalDbBackend.cs`, `Backends/FnDumpDblogQuery.cs`, `Data/LogCache.cs`, `Data/LogQuery.cs`
-- Test: `tests/SqlLogExplorer.Tests/LsnTests.cs`, `tests/SqlLogExplorer.Tests/LogCacheTests.cs`, `tests/SqlLogExplorer.Tests/FnDumpDblogQueryTests.cs`, `tests/SqlLogExplorer.Tests/LogQueryTests.cs`
+- Test: `tests/SqlLogExplorer.Tests/LsnTests.cs`, `tests/SqlLogExplorer.Tests/LogCacheTests.cs`, `tests/SqlLogExplorer.Tests/FnDumpDblogQueryTests.cs`, `tests/SqlLogExplorer.Tests/LogQueryTests.cs`, `tests/SqlLogExplorer.Tests/Integration/LogColumnsIntegrationTests.cs`
 
 Interfaces:
 - Produces: `LogRecord` with the new optional members below; `Lsn.Normalize(string)`, `Lsn.ToFnDblogArgument(string)`; `LogColumns.SelectList`, `LogColumns.Read(SqlDataReader)`; `LogCache.SetRowKeysAsync(IReadOnlyList<(string Lsn, string? RowKey)>, CancellationToken)`.
@@ -221,6 +221,8 @@ Replace the column assertions of `FnDumpDblogQueryTests.Build_ContainsRequiredCo
 
 Update `LogCacheTests.CreateAsync_CreatesLogRecordsTableAndIndexes` to also expect `IX_LogRecords_Alloc_Key_Lsn` and `IX_LogRecords_Alloc_Page_Slot_Lsn` (count 6).
 
+The existing `LogQueryTests.GetPageAsync_RespectsLimitOffsetAndOrder` seeds LSNs `lsn0` to `lsn4` and expects `lsn2`: after this task they are stored uppercase, so change its expectations to `LSN2` and `LSN3`. That is the only existing test this task changes.
+
 - [ ] Step 2: Run the tests to verify they fail
 
 Run: `dotnet test tests/SqlLogExplorer.Tests --filter "FullyQualifiedName~LsnTests|FullyQualifiedName~LogCacheTests|FullyQualifiedName~FnDumpDblogQueryTests|FullyQualifiedName~LogQueryTests"`
@@ -357,7 +359,7 @@ public static class LogColumns
 
 - [ ] Step 4: Run the tests to verify they pass
 
-Run the same command. Expected: every test passes; count the tests run and check it equals the number of tests in those four classes after your change (`grep -c "\[Fact\]\|\[Theory\]"` on the four files plus 13 theory rows). Any other count means the filter or the work is wrong.
+Run the same command. Expected: 31 tests passed (LsnTests 4, LogCacheTests 6, FnDumpDblogQueryTests 14 = 13 theory rows + 1 fact, LogQueryTests 7). If your count differs, recount against the tree and explain the difference before going on: a lower or a higher number both mean the filter or the work is wrong.
 
 - [ ] Step 5: Break and confirm
 
@@ -365,16 +367,56 @@ Break each of these, one at a time, print the mutated line with `grep -n`, run t
 - `Lsn.Normalize` returns its input unchanged: `InsertBatchAsync_IgnoresDuplicateLsnAndNormalizesCase` and `GetPageAsync_OrdersByLsnNotInsertionOrder` must fail;
 - `INSERT OR IGNORE` back to `INSERT`: the duplicate test must fail (unique constraint);
 - `ORDER BY LSN` back to `ORDER BY Id`: the ordering test must fail;
-- `LogColumns.Read` maps `[Num Elements]` from index 12: the round-trip test does not cover the reader (no SQL Server here). Report this honestly: the reader is covered by the integration test of Task 3, which reads real `fn_dblog` output.
+- `LogColumns.Read` maps `[Num Elements]` from index 12: `LogColumnsIntegrationTests` (Step 5b) must fail.
 
 Reporting that one break did not fail the test you expected is the successful outcome of this step, not a failure.
+
+- [ ] Step 5b: `sqlserver.sh` and the reader's integration test
+
+`tests/fixtures/sqlserver.sh`:
+
+```bash
+#!/usr/bin/env bash
+# Démarre ou arrête un SQL Server de test sous podman (spec03 §10.1).
+# up <2017|2019|2022|2025> <nom> : attend que le serveur réponde, puis imprime les lignes export
+#   SQLLOGEXPLORER_RUN_INTEGRATION et SQLLOGEXPLORER_TEST_SQL (à évaluer dans la MÊME invocation du shell).
+# down <nom> : supprime le conteneur.
+set -euo pipefail
+PASSWORD='Fixture#2026x'
+sqlcmd_path() { if [ "$1" = 2017 ]; then echo "/opt/mssql-tools/bin/sqlcmd"; else echo "/opt/mssql-tools18/bin/sqlcmd -C"; fi; }
+case "${1:-}" in
+  up)
+    version=$2 name=$3
+    podman run -d --name "$name" -p 127.0.0.1::1433 -e ACCEPT_EULA=Y -e "MSSQL_SA_PASSWORD=$PASSWORD" \
+      "mcr.microsoft.com/mssql/server:${version}-latest" >/dev/null
+    for _ in $(seq 1 90); do
+      podman exec "$name" $(sqlcmd_path "$version") -S localhost -U sa -P "$PASSWORD" -Q 'SELECT 1' >/dev/null 2>&1 && break
+      sleep 2
+    done
+    port=$(podman port "$name" 1433 | head -1 | cut -d: -f2)
+    echo "export SQLLOGEXPLORER_RUN_INTEGRATION=1"
+    echo "export SQLLOGEXPLORER_TEST_SQL='Server=127.0.0.1,$port;User ID=sa;Password=$PASSWORD;TrustServerCertificate=True;Database=master'" ;;
+  down) podman rm -f -t 2 "$2" >/dev/null ;;
+  *) echo "usage: $0 up <version> <name> | down <name>" >&2; exit 2 ;;
+esac
+```
+
+`tests/SqlLogExplorer.Tests/Integration/LogColumnsIntegrationTests.cs` creates a database `sle_cols_<guid>` on `SQLLOGEXPLORER_TEST_SQL`, runs `CREATE TABLE dbo.t(id int NOT NULL PRIMARY KEY, a int NULL); INSERT dbo.t VALUES (1, 10); UPDATE dbo.t SET a = 11 WHERE id = 1;`, then reads that database's log through `new LiveDatabaseBackend().ParseLogAsync(new[] { <connection string to that database> })`, and asserts that the `LOP_MODIFY_ROW` whose `AllocUnitName` starts with `dbo.t` has `OffsetInRow == 8`, `ModifySize == 1`, `NumElements` not null, `RowLogContents0 == [0x0A]`, `RowLogContents1 == [0x0B]`, a non-null `RowLogContents2`, a non-null `AllocUnitId`, and an `Lsn` equal to its uppercase form. It also reads with a range, `new LiveDatabaseBackend(new LsnRange(first, last))` where `first` and `last` are LSNs read in the first pass and at least one of them holds a letter, and asserts it returns records (the hexadecimal form fails with Msg 9005; the decimal form does not). It drops the database in a `finally`.
+
+Run, setup and tests in ONE invocation:
+
+```bash
+eval "$(bash tests/fixtures/sqlserver.sh up 2022 sle-it-t1)" && dotnet test tests/SqlLogExplorer.Tests --filter "FullyQualifiedName~LogColumnsIntegrationTests"; bash tests/fixtures/sqlserver.sh down sle-it-t1
+```
+
+Expected: 1 passed, 0 skipped. A skipped test means the variables did not reach the test process.
 
 - [ ] Step 6: Full suite and commit
 
 Run: `dotnet test tests/SqlLogExplorer.Tests`. Expected: all pass, integration tests skipped.
 
 ```bash
-git add Models/LogRecord.cs Models/Lsn.cs Backends/LogColumns.cs Backends/LiveDatabaseBackend.cs Backends/LocalDbBackend.cs Backends/FnDumpDblogQuery.cs Data/LogCache.cs Data/LogQuery.cs tests/SqlLogExplorer.Tests/LsnTests.cs tests/SqlLogExplorer.Tests/LogCacheTests.cs tests/SqlLogExplorer.Tests/LogQueryTests.cs tests/SqlLogExplorer.Tests/FnDumpDblogQueryTests.cs tests/SqlLogExplorer.Tests/LogRecordComparer.cs
+git add tests/fixtures/sqlserver.sh tests/SqlLogExplorer.Tests/Integration/LogColumnsIntegrationTests.cs Models/LogRecord.cs Models/Lsn.cs Backends/LogColumns.cs Backends/LiveDatabaseBackend.cs Backends/LocalDbBackend.cs Backends/FnDumpDblogQuery.cs Data/LogCache.cs Data/LogQuery.cs tests/SqlLogExplorer.Tests/LsnTests.cs tests/SqlLogExplorer.Tests/LogCacheTests.cs tests/SqlLogExplorer.Tests/LogQueryTests.cs tests/SqlLogExplorer.Tests/FnDumpDblogQueryTests.cs tests/SqlLogExplorer.Tests/LogRecordComparer.cs
 git commit -m "feat: import the log columns the decoder needs"
 ```
 
@@ -394,7 +436,7 @@ Files:
 Interfaces:
 - Produces:
   - `sealed record SchemaColumn(int PartitionColumnId, string Name, int LeafOffset, int LeafNullBit, int LeafBitPosition, int MaxInrowLength, int SystemTypeId, int Precision, int Scale, int? CodePage, bool IsNullable, bool IsDropped, bool IsUniqueifier, bool HasDefault, string? DefaultValue, int? KeyOrdinal)` with `bool IsFixed => LeafOffset > 0` and `bool IsBit => SystemTypeId == 104`;
-  - `sealed record TableSchema(long AllocUnitId, string ObjectName, int IndexId, int AllocUnitType, IReadOnlyList<SchemaColumn> Columns)` with `bool IsDataRows => AllocUnitType == 1 && IndexId is 0 or 1`, `IEnumerable<SchemaColumn> KeyColumns` (not dropped, `KeyOrdinal` set, ordered by `KeyOrdinal`) and `SchemaColumn? Uniqueifier`;
+  - `sealed record TableSchema(long AllocUnitId, string SchemaName, string TableName, int IndexId, int AllocUnitType, IReadOnlyList<SchemaColumn> Columns)` with `string ObjectName => $"{SchemaName}.{TableName}"` (display only: a query quotes `SchemaName` and `TableName` separately), `bool IsDataRows => AllocUnitType == 1 && IndexId is 0 or 1`, `IEnumerable<SchemaColumn> KeyColumns` (not dropped, `KeyOrdinal` set, ordered by `KeyOrdinal`) and `SchemaColumn? Uniqueifier`;
   - `SchemaProvider(string connectionString)` with `Task<TableSchema?> GetAsync(long allocUnitId, CancellationToken ct = default)` (cached per allocation unit, `null` when unknown) and `Task<bool> IsPrivilegedAsync(CancellationToken ct = default)`;
   - `SchemaProvider.Query` (the embedded SQL text, also used by Task 3).
 
@@ -404,7 +446,8 @@ Interfaces:
 -- Schéma physique d'une unité d'allocation (spec03 §4). @AllocUnitId NULL = toutes les unités utilisateur.
 -- sys.columns en jointure externe : les colonnes supprimées et l'uniqueifier n'y ont pas de ligne.
 SELECT au.allocation_unit_id                                   AS AllocUnitId,
-       OBJECT_SCHEMA_NAME(p.object_id) + N'.' + OBJECT_NAME(p.object_id) AS ObjectName,
+       OBJECT_SCHEMA_NAME(p.object_id)                         AS SchemaName,
+       OBJECT_NAME(p.object_id)                                AS TableName,
        p.index_id                                              AS IndexId,
        au.type                                                 AS AllocUnitType,
        pc.partition_column_id                                  AS PartitionColumnId,
@@ -457,7 +500,7 @@ public class TableSchemaTests
     [Fact]
     public void KeyColumns_AreOrderedByKeyOrdinalAndExcludeDroppedAndUniqueifier()
     {
-        var schema = new TableSchema(1, "dbo.k", 1, 1, new[]
+        var schema = new TableSchema(1, "dbo", "k", 1, 1, new[]
         {
             Col(1, "k1", -1, 1, 167, 10, keyOrdinal: 2),
             Col(2, "k2", 4, 2, 56, 4, keyOrdinal: 1),
@@ -472,7 +515,7 @@ public class TableSchemaTests
     [Theory]
     [InlineData(1, 0, true)] [InlineData(1, 1, true)] [InlineData(1, 2, false)] [InlineData(3, 1, false)]
     public void IsDataRows_OnlyInRowDataOfHeapOrClusteredIndex(int auType, int indexId, bool expected)
-        => Assert.Equal(expected, new TableSchema(1, "dbo.t", indexId, auType, Array.Empty<SchemaColumn>()).IsDataRows);
+        => Assert.Equal(expected, new TableSchema(1, "dbo", "t", indexId, auType, Array.Empty<SchemaColumn>()).IsDataRows);
 }
 ```
 
@@ -498,8 +541,10 @@ public sealed record SchemaColumn(
 }
 
 /// <summary>Schéma d'une unité d'allocation, colonnes dans l'ordre de leaf_null_bit (spec03 §4, §5).</summary>
-public sealed record TableSchema(long AllocUnitId, string ObjectName, int IndexId, int AllocUnitType, IReadOnlyList<SchemaColumn> Columns)
+public sealed record TableSchema(long AllocUnitId, string SchemaName, string TableName, int IndexId, int AllocUnitType, IReadOnlyList<SchemaColumn> Columns)
 {
+    public string ObjectName => $"{SchemaName}.{TableName}";
+
     public bool IsDataRows => AllocUnitType == 1 && IndexId is 0 or 1;
 
     public IEnumerable<SchemaColumn> KeyColumns =>
@@ -509,7 +554,7 @@ public sealed record TableSchema(long AllocUnitId, string ObjectName, int IndexI
 }
 ```
 
-`Backends/SchemaProvider.cs` reads the embedded resource once (`typeof(SchemaProvider).Assembly.GetManifestResourceStream("SqlLogExplorer.Backends.Sql.TableSchema.sql")`), runs it with `@AllocUnitId`, groups rows into one `TableSchema` (name `dropped#<PartitionColumnId>` when `ColumnName` is null and `IsDropped`, `uniqueifier` when `IsUniqueifier`), and caches results in a `Dictionary<long, TableSchema?>` (an unknown allocation unit is cached as `null`). `IsPrivilegedAsync` runs `SELECT CONVERT(bit, ISNULL(IS_SRVROLEMEMBER('sysadmin'), 0) | ISNULL(IS_ROLEMEMBER('db_owner'), 0));`.
+`Backends/SchemaProvider.cs` reads the embedded resource once (`typeof(SchemaProvider).Assembly.GetManifestResourceStream("SqlLogExplorer.Backends.Sql.TableSchema.sql")`), runs it with `@AllocUnitId`, groups rows into one `TableSchema` (name `dropped#<PartitionColumnId>` when `ColumnName` is null and `IsDropped`, `uniqueifier` when `IsUniqueifier`), and caches results in a `Dictionary<long, TableSchema?>` (an unknown allocation unit is cached as `null`). Several result columns are `tinyint` or `smallint` (`IndexId`, `AllocUnitType`, `SystemTypeId`, `Precision`, `Scale`, `LeafNullBit`, `LeafBitPosition`, `KeyOrdinal`...): read every integer with `Convert.ToInt32(reader.GetValue(i))`, never `GetInt32`, which throws on them. `IsPrivilegedAsync` runs `SELECT CONVERT(bit, ISNULL(IS_SRVROLEMEMBER('sysadmin'), 0) | ISNULL(IS_ROLEMEMBER('db_owner'), 0));`.
 
 Run the unit tests. Expected: 5 pass (1 fact, 4 theory rows).
 
@@ -534,20 +579,17 @@ and asserts, for the in-row allocation unit of each table (`SELECT allocation_un
 
 It drops the database in a `finally`.
 
-Run (setup and test in ONE invocation; `sqlserver.sh` comes from Task 3, so in this task start the container by hand the same way):
+Run (setup and test in ONE invocation):
 
 ```bash
-podman run -d --name sle-it-t2 -p 127.0.0.1::1433 -e ACCEPT_EULA=Y -e 'MSSQL_SA_PASSWORD=Fixture#2026x' mcr.microsoft.com/mssql/server:2022-latest >/dev/null \
- && until podman exec sle-it-t2 /opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P 'Fixture#2026x' -Q 'select 1' >/dev/null 2>&1; do sleep 2; done \
- && export SQLLOGEXPLORER_RUN_INTEGRATION=1 SQLLOGEXPLORER_TEST_SQL="Server=127.0.0.1,$(podman port sle-it-t2 1433 | cut -d: -f2);User ID=sa;Password=Fixture#2026x;TrustServerCertificate=True;Database=master" \
- && dotnet test tests/SqlLogExplorer.Tests --filter "FullyQualifiedName~SchemaProviderIntegrationTests"; podman rm -f sle-it-t2 >/dev/null
+eval "$(bash tests/fixtures/sqlserver.sh up 2022 sle-it-t2)" && dotnet test tests/SqlLogExplorer.Tests --filter "FullyQualifiedName~SchemaProviderIntegrationTests"; bash tests/fixtures/sqlserver.sh down sle-it-t2
 ```
 
 Expected: 1 test passed, 0 skipped. A skipped test means the variables did not reach the test process.
 
 - [ ] Step 5: Break and confirm
 
-One at a time, printing the mutated line: change the `LEFT JOIN sys.columns` to `JOIN` (the dropped-column assertion must fail); drop `AND p.index_id = 1` from the `sys.index_columns` join (no assertion fails today: report it, and add to the test a nonclustered index on `dbo.t(a)` and assert `a.KeyOrdinal` is null, then confirm it fails under the break).
+One at a time, printing the mutated line: change the `LEFT JOIN sys.columns` to `JOIN` (the dropped-column assertion must fail); read `IndexId` with `GetInt32` instead of `Convert.ToInt32` (the test must fail with an invalid cast, which proves the conversion rule is exercised).
 
 - [ ] Step 6: Commit
 
@@ -563,40 +605,15 @@ git commit -m "feat: read the physical schema of an allocation unit"
 Spec §10.1, §10.2. Produces the frozen data every decoding test uses. The expected values are the ones the scenarios insert; they are written in the scenario files and repeated in the tests, never read back from the decoder.
 
 Files:
-- Create: `tests/fixtures/sqlserver.sh`, `tests/fixtures/capture.sh`, `tests/fixtures/capture.sql`, `tests/fixtures/scenarios/*.sql` (list below), `tests/SqlLogExplorer.Tests/FixtureSet.cs`, `tests/SqlLogExplorer.Tests/Fixtures/<version>/<scenario>.json`
+- Create: `tests/fixtures/capture.sh`, `tests/fixtures/capture.sql`, `tests/fixtures/scenarios/*.sql` (list below), `tests/SqlLogExplorer.Tests/FixtureSet.cs`, `tests/SqlLogExplorer.Tests/Fixtures/<version>/<scenario>.json`
 - Modify: `tests/SqlLogExplorer.Tests/SqlLogExplorer.Tests.csproj` (copy fixtures to output)
 - Test: `tests/SqlLogExplorer.Tests/FixtureSetTests.cs`, `tests/SqlLogExplorer.Tests/Integration/CaptureIntegrationTests.cs`
 
 Interfaces:
-- Produces: `FixtureSet.Versions` (`"2017", "2019", "2022", "2025"`); `FixtureSet.Load(string version, string scenario)` returning `Fixture(string Version, IReadOnlyList<LogRecord> Log, IReadOnlyDictionary<long, TableSchema> Schemas, IReadOnlyList<PageDumpLine> Pages)`; `Fixture.ForTable(string objectName)` returning the in-row `TableSchema` of that table and its data records (`LOP_INSERT_ROWS`, `LOP_DELETE_ROWS`, `LOP_MODIFY_ROW`, `LOP_MODIFY_COLUMNS`) in LSN order; `PageDumpLine(int Style, string PageId, string ParentObject, string Object, string Field, string Value)`; `sqlserver.sh up <version> <name>` printing `export` lines, `sqlserver.sh down <name>`.
+- Consumes: `tests/fixtures/sqlserver.sh` (Task 1), `Backends/Sql/TableSchema.sql` (Task 2).
+- Produces: `FixtureSet.Versions` (`"2017", "2019", "2022", "2025"`); `FixtureSet.Load(string version, string scenario)` returning `Fixture(string Version, IReadOnlyList<LogRecord> Log, IReadOnlyDictionary<long, TableSchema> Schemas, IReadOnlyList<PageDumpLine> Pages)`; `Fixture.ForTable(string objectName)` returning the in-row `TableSchema` of that table and its data records (`LOP_INSERT_ROWS`, `LOP_DELETE_ROWS`, `LOP_MODIFY_ROW`, `LOP_MODIFY_COLUMNS`) in LSN order; `PageDumpLine(int Style, string PageId, string ParentObject, string Object, string Field, string Value)`.
 
-- [ ] Step 1: `tests/fixtures/sqlserver.sh`
-
-```bash
-#!/usr/bin/env bash
-# Démarre ou arrête un SQL Server de test sous podman (spec03 §10.1).
-# up <2017|2019|2022|2025> <nom> : attend que le serveur réponde, puis imprime les lignes export
-#   SQLLOGEXPLORER_RUN_INTEGRATION et SQLLOGEXPLORER_TEST_SQL (à évaluer dans la MÊME invocation du shell).
-# down <nom> : supprime le conteneur.
-set -euo pipefail
-PASSWORD='Fixture#2026x'
-sqlcmd_path() { if [ "$1" = 2017 ]; then echo "/opt/mssql-tools/bin/sqlcmd"; else echo "/opt/mssql-tools18/bin/sqlcmd -C"; fi; }
-case "${1:-}" in
-  up)
-    version=$2 name=$3
-    podman run -d --name "$name" -p 127.0.0.1::1433 -e ACCEPT_EULA=Y -e "MSSQL_SA_PASSWORD=$PASSWORD" \
-      "mcr.microsoft.com/mssql/server:${version}-latest" >/dev/null
-    for _ in $(seq 1 90); do
-      podman exec "$name" $(sqlcmd_path "$version") -S localhost -U sa -P "$PASSWORD" -Q 'SELECT 1' >/dev/null 2>&1 && break
-      sleep 2
-    done
-    port=$(podman port "$name" 1433 | head -1 | cut -d: -f2)
-    echo "export SQLLOGEXPLORER_RUN_INTEGRATION=1"
-    echo "export SQLLOGEXPLORER_TEST_SQL='Server=127.0.0.1,$port;User ID=sa;Password=$PASSWORD;TrustServerCertificate=True;Database=master'" ;;
-  down) podman rm -f -t 2 "$2" >/dev/null ;;
-  *) echo "usage: $0 up <version> <name> | down <name>" >&2; exit 2 ;;
-esac
-```
+- [ ] Step 1: `tests/fixtures/sqlserver.sh` exists since Task 1; use it for every container this task starts by hand.
 
 - [ ] Step 2: Scenarios
 
@@ -617,7 +634,7 @@ CREATE TABLE dbo.types (
 INSERT dbo.types VALUES (1, 200, -12345, 1234567890123, 1, 0, 1,
   1234567.89, 123456789012345.6789, 1234567890123456789012.123456, 1234567890123456789012345678.0123456789, -1234.5,
   922337203685477.5807, -214748.3648, 3.5, -2.25,
-  '2026-10-15', '13:14:15', '13:14:15.123', '13:14:15.1234567', '2026-10-15T13:14:15.123', '2026-10-15T13:14',
+  '2026-10-15', '13:14:15', '13:14:15.123', '13:14:15.1234567', '2026-10-15T13:14:15.123', '2026-10-15T13:14:00',
   '2026-10-15T13:14:15', '2026-10-15T13:14:15.123', '2026-10-15T13:14:15.1234567', '2026-10-15T13:14:15.1234567+02:00',
   '6F9619FF-8B86-D011-B42D-00C04FC964FF', 'ab', 'élan', N'日本', N'Grüße', 0xDEADBEEF, 0x0102, '<a/>');
 INSERT dbo.types (id) VALUES (2);
@@ -734,7 +751,7 @@ INSERT dbo.ov VALUES (1, REPLICATE('c', 5000), REPLICATE('d', 5000), REPLICATE(C
 
 ```sql
 CREATE TABLE dbo.co (id int NOT NULL PRIMARY KEY, gr varchar(10) COLLATE Greek_CI_AS, ja varchar(10) COLLATE Japanese_CI_AS);
-INSERT dbo.co VALUES (1, 'αβγ', N'日本語');
+INSERT dbo.co VALUES (1, N'αβγ', N'日本語');
 CREATE TABLE dbo.u8 (id int NOT NULL PRIMARY KEY, s varchar(20) COLLATE Latin1_General_100_CI_AS_SC_UTF8); -- 2019+
 INSERT dbo.u8 VALUES (1, N'Grüße 日本'); -- 2019+
 ```
@@ -814,7 +831,8 @@ snapshot_proc=$(sed 's/@AllocUnitId IS NULL OR //' "$here/../../Backends/Sql/Tab
 for v in "${versions[@]}"; do
   name="sle-capture-$v-$$"
   if [ "$v" = 2017 ]; then sq=(/opt/mssql-tools/bin/sqlcmd); else sq=(/opt/mssql-tools18/bin/sqlcmd -C); fi
-  run() { podman exec -i "$name" "${sq[@]}" -S localhost -U sa -P "$PASSWORD" -b -I -y 0 "$@"; }
+  # -y 0 (pas de troncature des nvarchar(max)) est incompatible avec -h et -W : il ne sert qu'à la capture JSON.
+  run() { podman exec -i "$name" "${sq[@]}" -S localhost -U sa -P "$PASSWORD" -b -I "$@"; }
   podman run -d --name "$name" -e ACCEPT_EULA=Y -e "MSSQL_SA_PASSWORD=$PASSWORD" "mcr.microsoft.com/mssql/server:${v}-latest" >/dev/null
   trap 'podman rm -f -t 2 "$name" >/dev/null' EXIT
   until run -Q 'SELECT 1' >/dev/null 2>&1; do sleep 2; done
@@ -826,14 +844,14 @@ for v in "${versions[@]}"; do
     run -Q "IF DB_ID('fx') IS NOT NULL BEGIN ALTER DATABASE fx SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE fx; END; CREATE DATABASE fx; ALTER DATABASE fx SET RECOVERY FULL; BACKUP DATABASE fx TO DISK = '/var/opt/mssql/data/fx.bak' WITH INIT;" >/dev/null
     [[ "$opts" == *RCSI* ]] && run -Q "ALTER DATABASE fx SET READ_COMMITTED_SNAPSHOT ON WITH ROLLBACK IMMEDIATE;" >/dev/null
     [[ "$opts" == *ADR* ]] && run -Q "ALTER DATABASE fx SET ACCELERATED_DATABASE_RECOVERY = ON;" >/dev/null
-    { echo "CREATE TABLE dbo.SchemaSnapshot (AllocUnitId bigint, ObjectName nvarchar(300), IndexId int, AllocUnitType int, PartitionColumnId int, ColumnName sysname NULL, LeafOffset int, LeafNullBit int, LeafBitPosition int, MaxInrowLength int, SystemTypeId int, [Precision] int, Scale int, CodePage int NULL, IsNullable bit, IsDropped bit, IsUniqueifier bit, HasDefault bit, DefaultValue nvarchar(4000) NULL, KeyOrdinal int NULL);"
+    { echo "CREATE TABLE dbo.SchemaSnapshot (AllocUnitId bigint, SchemaName sysname, TableName sysname, IndexId int, AllocUnitType int, PartitionColumnId int, ColumnName sysname NULL, LeafOffset int, LeafNullBit int, LeafBitPosition int, MaxInrowLength int, SystemTypeId int, [Precision] int, Scale int, CodePage int NULL, IsNullable bit, IsDropped bit, IsUniqueifier bit, HasDefault bit, DefaultValue nvarchar(4000) NULL, KeyOrdinal int NULL);"
       echo "GO"
       echo "CREATE PROCEDURE dbo.SnapshotSchema AS INSERT dbo.SchemaSnapshot $snapshot_proc"
       echo "GO"; } | run -d fx -i /dev/stdin >/dev/null
     start=$(run -d fx -h -1 -W -Q "SET NOCOUNT ON; SELECT MAX([Current LSN]) FROM sys.fn_dblog(NULL, NULL);" | tr -d '\r' | head -1)
     start_dec=$(python3 -I -c "import sys; print(':'.join(str(int(p,16)) for p in sys.argv[1].split(':')))" "$start")
     if [ "$v" = 2017 ]; then grep -v -- '-- 2019+' "$f"; else cat "$f"; fi | run -d fx -i /dev/stdin >/dev/null
-    run -d fx -h -1 -W -v StartLsn="$start_dec" -i /dev/stdin < "$here/capture.sql" | tr -d '\r' | grep -v '^$' > "$out/$v/$scenario.json"
+    run -d fx -y 0 -v StartLsn="$start_dec" -i /dev/stdin < "$here/capture.sql" | tr -d '\r' | grep '^{' > "$out/$v/$scenario.json"
     python3 -I -c "import json,sys; json.load(open(sys.argv[1]))" "$out/$v/$scenario.json"
   done
   podman rm -f -t 2 "$name" >/dev/null; trap - EXIT
@@ -846,7 +864,7 @@ This script is the place where the brief is most likely to be wrong: it was writ
 
 - [ ] Step 5: `FixtureSet` and its test
 
-`tests/SqlLogExplorer.Tests/FixtureSet.cs` deserializes the JSON with `System.Text.Json` (case-insensitive), turns base64 into `byte[]`, normalizes `Lsn` with `Lsn.Normalize`, and builds `TableSchema` objects grouped by `AllocUnitId` (columns ordered by `LeafNullBit`, names as in `SchemaProvider`). `Fixture.ForTable("dbo.t")` returns the schema whose `ObjectName == "dbo.t"`, `IsDataRows` true, of the highest `AllocUnitId` present in the log for that object, and the data records of that allocation unit in LSN order. Copy the fixtures to the test output: `<None Include="Fixtures\\*.json" CopyToOutputDirectory="PreserveNewest" />`.
+`tests/SqlLogExplorer.Tests/FixtureSet.cs` deserializes the JSON with `System.Text.Json` (case-insensitive), turns base64 into `byte[]`, normalizes `Lsn` with `Lsn.Normalize`, and builds `TableSchema` objects grouped by `AllocUnitId` (columns ordered by `LeafNullBit`, names as in `SchemaProvider`). `Fixture.ForTable("dbo.t")` returns the schema whose `ObjectName == "dbo.t"`, `IsDataRows` true, of the highest `AllocUnitId` present in the log for that object, and the data records of that allocation unit in LSN order. Only records whose `Context` is `LCX_HEAP`, `LCX_CLUSTERED` or `LCX_MARK_AS_GHOST` are data records (the log also holds `LCX_PFS` records carrying the table's `AllocUnitId`, spec §5). Copy the fixtures to the test output, recursively (they sit in version subfolders): `<None Include="Fixtures/**/*.json" CopyToOutputDirectory="PreserveNewest" />`.
 
 `FixtureSetTests`:
 
@@ -874,7 +892,7 @@ public class FixtureSetTests
 
 - [ ] Step 6: Capture and run
 
-Run: `bash tests/fixtures/capture.sh` (about ten minutes for four versions). Then `dotnet test tests/SqlLogExplorer.Tests --filter "FullyQualifiedName~FixtureSetTests"`. Expected: 4 passed.
+First run `dotnet test tests/SqlLogExplorer.Tests --filter "FullyQualifiedName~FixtureSetTests"` before capturing: expected 4 failures, each a missing fixture file (this proves the test reads files from the output folder). Then run `bash tests/fixtures/capture.sh` (about ten minutes for four versions). Then `dotnet test tests/SqlLogExplorer.Tests --filter "FullyQualifiedName~FixtureSetTests"`. Expected: 4 passed.
 
 Then check by hand, and write the result in your report, for one version: the `modify` fixture holds a `LOP_MODIFY_ROW` with `Offset in Row` 8 and contents `0x0A` / `0x0B`; the `versioned_adr` fixture exists for 2019, 2022 and 2025 and not 2017; the `schema_change` fixture holds two allocation units named `dbo.rb`.
 
@@ -1140,7 +1158,7 @@ Files:
 
 Interfaces:
 - Consumes: `TableSchema`, `SchemaColumn` (Task 2), `DecodedRow`, `TypeDecoder` (Task 5), `FixtureSet` (Task 3).
-- Produces: `public static class RowDecoder { public static DecodedRow Decode(byte[] row, TableSchema? schema); }`. Each present column yields exactly one `DecodedColumn` in `leaf_null_bit` order (dropped columns yield none); each field of the row yields one or more `DecodedField`s. Column notes, used verbatim by later tasks: `"added after the row was written"`, `"off-row value not followed"`, `"type not decoded"`.
+- Produces: `public static class RowDecoder { public static DecodedRow Decode(byte[]? row, TableSchema? schema); }` (a `null` or empty row gives one malformed field "no row image": a compensation delete has empty contents). Each present column yields exactly one `DecodedColumn` in `leaf_null_bit` order (dropped columns yield none); each field of the row yields one or more `DecodedField`s. Column notes, used verbatim by later tasks: `"added after the row was written"`, `"off-row value not followed"`, `"type not decoded"`.
 
 - [ ] Step 1: Write the failing tests
 
@@ -1153,7 +1171,7 @@ namespace SqlLogExplorer.Tests.Decoding;
 public class RowDecoderTests
 {
     // spec03 §2 : t(id int not null primary key, a int null, b varchar(20) null, c bit, d bit), ligne (1, 10, 'abc', 1, 0).
-    private static readonly TableSchema T = new(1, "dbo.t", 1, 1, new[]
+    private static readonly TableSchema T = new(1, "dbo", "t", 1, 1, new[]
     {
         Col(1, "id", 4, 1, 56, 4, keyOrdinal: 1), Col(2, "a", 8, 2, 56, 4), Col(3, "b", -1, 3, 167, 20) with { CodePage = 1252 },
         Col(4, "c", 12, 4, 104, 1, bitPos: 0), Col(5, "d", 12, 5, 104, 1, bitPos: 1),
@@ -1176,7 +1194,7 @@ public class RowDecoderTests
     [Fact]
     public void NoVariableColumnPresent_RowEndsAfterBitmap()   // spec03 §2, t_novar (3, 30, NULL)
     {
-        var s = new TableSchema(1, "dbo.t_novar", 1, 1, new[] { Col(1, "id", 4, 1, 56, 4), Col(2, "n1", 8, 2, 56, 4), Col(3, "v1", -1, 3, 167, 10) });
+        var s = new TableSchema(1, "dbo", "t_novar", 1, 1, new[] { Col(1, "id", 4, 1, 56, 4), Col(2, "n1", 8, 2, 56, 4), Col(3, "v1", -1, 3, 167, 10) });
         var row = RowDecoder.Decode(Hex("10000C00030000001E000000030004"), s);
 
         Assert.False(row.HasProblem);
@@ -1186,7 +1204,7 @@ public class RowDecoderTests
     [Fact]
     public void NullFixedColumn_IgnoresStaleBytes()
     {
-        var s = new TableSchema(1, "dbo.x", 1, 1, new[] { Col(1, "id", 4, 1, 56, 4), Col(2, "n1", 8, 2, 56, 4) });
+        var s = new TableSchema(1, "dbo", "x", 1, 1, new[] { Col(1, "id", 4, 1, 56, 4), Col(2, "n1", 8, 2, 56, 4) });
         var row = RowDecoder.Decode(Hex("10000C0004000000E0E61322020002"), s);   // bit 2 du bitmap = n1 NULL
 
         Assert.Null(V(row, "n1"));
@@ -1195,7 +1213,7 @@ public class RowDecoderTests
     [Fact]
     public void ColumnAddedAfterRow_TakesDefault_AndIsNotMalformed()
     {
-        var s = new TableSchema(1, "dbo.ac", 1, 1, new[]
+        var s = new TableSchema(1, "dbo", "ac", 1, 1, new[]
         {
             Col(1, "id", 4, 1, 56, 4), Col(2, "a", 8, 2, 56, 4),
             Col(3, "n", 12, 3, 56, 4) with { HasDefault = true, DefaultValue = "7", IsNullable = false },
@@ -1210,7 +1228,7 @@ public class RowDecoderTests
     [Fact]
     public void OffRowPointer_IsAnnotatedNotDecoded()
     {
-        var s = new TableSchema(1, "dbo.o", 1, 1, new[] { Col(1, "id", 4, 1, 56, 4), Col(2, "m", -1, 2, 167, 8000) });
+        var s = new TableSchema(1, "dbo", "o", 1, 1, new[] { Col(1, "id", 4, 1, 56, 4), Col(2, "m", -1, 2, 167, 8000) });
         var pointer = new string('0', 48);   // 24 octets de pointeur : données de 15 à 39, fin 0x27 | 0x8000
         var row = RowDecoder.Decode(Hex("30000800010000000200000100" + "2780" + pointer), s);
 
@@ -1236,6 +1254,31 @@ public class RowDecoderTests
     {
         var row = RowDecoder.Decode(Hex(hex), T);
         Assert.True(row.HasProblem);
+    }
+
+    [Fact]
+    public void NullOrEmptyRow_IsMalformed_NotAnException()
+    {
+        Assert.True(RowDecoder.Decode(null, T).HasProblem);
+        Assert.True(RowDecoder.Decode(Array.Empty<byte>(), T).HasProblem);
+    }
+
+    [Fact]
+    public void NoVariableArea_ClearNullBit_IsEmptyNotNull()   // ligne (3, '') : pas de zone variable, bit NULL à 0
+    {
+        var s = new TableSchema(1, "dbo", "e", 1, 1, new[] { Col(1, "id", 4, 1, 56, 4), Col(2, "vc", -1, 2, 167, 10) with { CodePage = 1252 } });
+        var row = RowDecoder.Decode(Hex("1000080003000000020000"), s);
+
+        Assert.False(row.HasProblem);
+        Assert.Equal("", V(row, "vc"));
+    }
+
+    [Fact]
+    public void FixedEndDifferentFromSchema_IsMalformed()   // spec03 §8 : F = 14 alors que le schéma prévoit 13
+    {
+        var row = RowDecoder.Decode(Hex("30000E00010000000A0000000100" + "0500000100180061626300"[..20]), T);
+
+        Assert.Contains(row.Fields, f => f.Role == FieldRole.Malformed && f.Problem!.Contains("schema predicts 13"));
     }
 
     [Fact]
@@ -1269,7 +1312,9 @@ Add fixture theories over the four versions (`TheoryData` of versions as in `Fix
 - `versioned` and `versioned_adr`: the insert decodes `a == 10`, `b == "abc"`, with a `VersionTag` field.
 - `split`: the `dbo.ov` insert has two variable columns annotated `"off-row value not followed"`... only if they went off-row; read the fixture and assert what the bytes say, then say in your report what you found.
 
-Also compare, for each version, the fields of the `dbo.t` row in the `modify` fixture's `DBCC PAGE (…, 3)` output (`Fixture.Pages`, `Style == 3`, lines whose `Field` is a column name and whose `Value` gives `Offset 0x.. Length ..`) with the `DecodedField` offsets and lengths of the same row. The insert in the log and the row on the page differ (the page shows the row after its updates, or not at all after the delete): pick a table whose row is still on the page at capture time (`dbo.u` id 2) and its last image (replay is Task 9; for this check, decode the page row from the `Style == 1` memory dump instead of the log).
+Add one sweep theory over every version and every scenario: every `LOP_INSERT_ROWS` and `LOP_DELETE_ROWS` data record (context `LCX_HEAP`, `LCX_CLUSTERED`, `LCX_MARK_AS_GHOST`, schema `IsDataRows`) decodes without exception, and `HasProblem` is false except for compensation records with empty contents. It must cover `dbo.nk` of the `keys` scenario, whose `('x', NULL)` row has a zero-length uniqueifier (`30000C000E0000000100000004000402001500160078`): the plan's first version of this decoder threw on it.
+
+Also compare, for each version, the fields of the `dbo.t` row in the `modify` fixture's `DBCC PAGE (…, 3)` output (`Fixture.Pages`, `Style == 3`, lines whose `Field` is a column name; the offset and length are in the `Object` column, as `Slot 0 Column 2 Offset 0x8 Length 4 Length (physical) 4`) with the `DecodedField` offsets and lengths of the same row. The insert in the log and the row on the page differ (the page shows the row after its updates, or not at all after the delete): pick a table whose row is still on the page at capture time (`dbo.u` id 2) and its last image (replay is Task 9; for this check, decode the page row from the `Style == 1` memory dump instead of the log).
 
 - [ ] Step 2: Run to verify they fail
 
@@ -1288,14 +1333,14 @@ namespace SqlLogExplorer.Decoding;
 /// <summary>Parcours d'une ligne de données (spec03 §5). Ne lève jamais d'exception : les défauts deviennent des champs Malformed.</summary>
 public static class RowDecoder
 {
-    public static DecodedRow Decode(byte[] row, TableSchema? schema)
+    public static DecodedRow Decode(byte[]? row, TableSchema? schema)
     {
         var fields = new List<DecodedField>();
         var columns = new List<DecodedColumn>();
-        if (row.Length < 4)
+        if (row is null || row.Length < 4)
         {
-            fields.Add(new DecodedField(0, row.Length, FieldRole.Malformed, Problem: "row shorter than its header"));
-            return new DecodedRow(row.Length > 0 ? row[0] >> 1 & 7 : -1, fields, columns);
+            fields.Add(new DecodedField(0, row?.Length ?? 0, FieldRole.Malformed, Problem: row is null || row.Length == 0 ? "no row image" : "row shorter than its header"));
+            return new DecodedRow(row is { Length: > 0 } ? row[0] >> 1 & 7 : -1, fields, columns);
         }
 
         var a = row[0];
@@ -1304,7 +1349,7 @@ public static class RowDecoder
         fields.Add(new DecodedField(1, 1, FieldRole.StatusB, Value: row[1]));
         if (type != 0)
         {
-            fields.Add(new DecodedField(2, row.Length - 2, FieldRole.Unused, Problem: null));
+            fields.Add(new DecodedField(2, row.Length - 2, FieldRole.Unused));
             return new DecodedRow(type, fields, columns);
         }
 
@@ -1358,8 +1403,13 @@ public static class RowDecoder
         }
         else
         {
-            if (schema.Columns.Count(c => !c.IsDropped) > 0 && n > schema.Columns.Count)
+            if (n > schema.Columns.Count)
                 fields.Add(new DecodedField(fixedEnd, 2, FieldRole.Malformed, Problem: "column count greater than the schema's"));
+            // spec03 §8 : la fin de la partie fixe doit être celle que le schéma prévoit pour les N colonnes présentes.
+            var expectedEnd = schema.Columns.Where(c => c.IsFixed && c.LeafNullBit <= n)
+                .Select(c => c.LeafOffset + (c.IsBit ? 1 : c.MaxInrowLength)).DefaultIfEmpty(4).Max();
+            if (expectedEnd != fixedEnd)
+                fields.Add(new DecodedField(2, 2, FieldRole.Malformed, Problem: $"fixed-data end offset {fixedEnd}, the schema predicts {expectedEnd}"));
             var claimed = new bool[fixedEnd];
             foreach (var c in schema.Columns)
                 DecodeColumn(row, c, n, IsNull, fixedEnd, varStart, ends, fields, columns, claimed);
@@ -1388,8 +1438,7 @@ public static class RowDecoder
     private static void DecodeColumn(byte[] row, SchemaColumn c, int n, Func<int, bool> isNull, int fixedEnd, int varStart,
         List<(int End, bool OffRow)> ends, List<DecodedField> fields, List<DecodedColumn> columns, bool[] claimed)
     {
-        var present = c.LeafNullBit <= n;
-        if (!present)
+        if (c.LeafNullBit > n)   // colonne ajoutée après l'écriture de la ligne : son leaf_offset n'est jamais lu
         {
             if (!c.IsDropped)
                 columns.Add(new DecodedColumn(c.Name, c.HasDefault ? c.DefaultValue : null, "added after the row was written"));
@@ -1407,36 +1456,49 @@ public static class RowDecoder
             }
             for (var i = c.LeafOffset; i < c.LeafOffset + length; i++) claimed[i] = true;
             if (c.IsDropped) { fields.Add(new DecodedField(c.LeafOffset, length, FieldRole.DroppedColumn, c.Name)); return; }
-            var value = isNull(c.LeafNullBit) ? null : TypeDecoder.Decode(c, row.AsSpan(c.LeafOffset, length));
-            fields.Add(new DecodedField(c.LeafOffset, length, FieldRole.FixedColumn, c.Name, value));
-            columns.Add(new DecodedColumn(c.Name, value, TypeDecoder.IsSupported(c.SystemTypeId) ? null : "type not decoded"));
+            Add(row.AsSpan(c.LeafOffset, length), c.LeafOffset, FieldRole.FixedColumn);
             return;
         }
 
         var j = -c.LeafOffset - 1;
-        if (j >= ends.Count)   // colonne variable NULL en fin de ligne, absente du tableau d'offsets
+        if (j >= ends.Count)   // absente du tableau d'offsets (ou zone variable absente) : NULL si le bit le dit, sinon vide
         {
-            if (!c.IsDropped) columns.Add(new DecodedColumn(c.Name, null));
+            if (!c.IsDropped) columns.Add(new DecodedColumn(c.Name, isNull(c.LeafNullBit) ? null : SafeDecode(c, ReadOnlySpan<byte>.Empty).Value));
             return;
         }
         var start = j == 0 ? varStart : ends[j - 1].End;
         var len = ends[j].End - start;
         if (c.IsDropped) { fields.Add(new DecodedField(start, len, FieldRole.DroppedColumn, c.Name)); return; }
-        if (isNull(c.LeafNullBit))
-        {
-            fields.Add(new DecodedField(start, len, FieldRole.VariableColumn, c.Name));
-            columns.Add(new DecodedColumn(c.Name, null));
-        }
-        else if (ends[j].OffRow)
+        if (ends[j].OffRow && !isNull(c.LeafNullBit))
         {
             fields.Add(new DecodedField(start, len, FieldRole.LobPointer, c.Name));
             columns.Add(new DecodedColumn(c.Name, null, "off-row value not followed"));
+            return;
         }
-        else
+        Add(row.AsSpan(start, len), start, FieldRole.VariableColumn);
+
+        void Add(ReadOnlySpan<byte> bytes, int offset, FieldRole role)
         {
-            var value = TypeDecoder.Decode(c, row.AsSpan(start, len));
-            fields.Add(new DecodedField(start, len, FieldRole.VariableColumn, c.Name, value));
-            columns.Add(new DecodedColumn(c.Name, value, TypeDecoder.IsSupported(c.SystemTypeId) ? null : "type not decoded"));
+            if (isNull(c.LeafNullBit))
+            {
+                fields.Add(new DecodedField(offset, bytes.Length, role, c.Name));
+                columns.Add(new DecodedColumn(c.Name, null));
+                return;
+            }
+            var (value, problem) = SafeDecode(c, bytes);
+            fields.Add(new DecodedField(offset, bytes.Length, problem is null ? role : FieldRole.Malformed, c.Name, value, problem));
+            columns.Add(new DecodedColumn(c.Name, value, problem ?? (TypeDecoder.IsSupported(c.SystemTypeId) ? null : "type not decoded")));
+        }
+    }
+
+    // L'uniqueifier de la première ligne d'une clé est une colonne variable de longueur nulle : il vaut 0 (spec03 §5).
+    private static (object? Value, string? Problem) SafeDecode(SchemaColumn c, ReadOnlySpan<byte> bytes)
+    {
+        if (c.IsUniqueifier && bytes.Length == 0) return (0, null);
+        try { return (TypeDecoder.Decode(c, bytes), null); }
+        catch (Exception e) when (e is ArgumentException or IndexOutOfRangeException)
+        {
+            return (null, $"{bytes.Length} bytes do not fit the column type");
         }
     }
 
@@ -1452,7 +1514,7 @@ Two points to verify against the fixtures rather than trust: that `max_inrow_len
 
 - [ ] Step 4: Run to verify they pass
 
-Same command. Count: 8 facts, 4 malformed rows, plus the fixture theories you wrote (state the number). Any other count means the filter or the work is wrong.
+Same command. Count: 11 facts, 4 malformed rows, plus the fixture theories you wrote (state the number). Any other count means the filter or the work is wrong.
 
 - [ ] Step 5: Break and confirm
 
@@ -1541,7 +1603,7 @@ From spec §2: `a` 10 to 11 (`Offset 8, Size 1, 0x0A -> 0x0B`) applied forward t
 
 - [ ] Step 3: Implement
 
-`LOP_MODIFY_ROW`: one fragment, `Offset = OffsetInRow`, `Before = Rlc0 ?? []`, `After = Rlc1 ?? []`, `ForwardLength = record.IsCompensation ? ModifySize : Before.Length`. `ApplyForward` checks `row[Offset..Offset+Before.Length] == Before` unless `Before` is empty and the record was a compensation (an empty `Before` with `ForwardLength > 0` is a compensation: no check), then replaces `ForwardLength` bytes with `After`. `ApplyBackward` refuses a fragment with an empty `Before` and `ForwardLength > 0` (compensation: before bytes not logged), checks `After` at `Offset`, and replaces `After.Length` bytes with `Before`. `LOP_MODIFY_COLUMNS`: per the note; `null` when the note says the layout is unknown for the record's shape.
+`LOP_MODIFY_ROW`: one fragment, `Offset = record.OffsetInRow ?? 0`, `Before = record.RowLogContents0 ?? []`, `After = record.RowLogContents1 ?? []`, `ForwardLength = record.IsCompensation ? record.ModifySize ?? 0 : Before.Length` (the `LogRecord` members are nullable, `Fragment`'s are not). Compensation fragments are decoded for the Bytes view and for `ApplyForward`'s own tests; the replay never applies them (spec §7.3 drops rolled-back transactions whole and stops at partial rollbacks). `ApplyForward` checks `row[Offset..Offset+Before.Length] == Before` unless `Before` is empty and the record was a compensation (an empty `Before` with `ForwardLength > 0` is a compensation: no check), then replaces `ForwardLength` bytes with `After`. `ApplyBackward` refuses a fragment with an empty `Before` and `ForwardLength > 0` (compensation: before bytes not logged), checks `After` at `Offset`, and replaces `After.Length` bytes with `Before`. `LOP_MODIFY_COLUMNS`: per the note; `null` when the note says the layout is unknown for the record's shape.
 
 - [ ] Step 4: Run to verify they pass, stating the count.
 - [ ] Step 5: Break and confirm: remove the before check (the mismatch test must fail); use `Before.Length` for compensations (the compensation test must fail); for `LOP_MODIFY_COLUMNS`, swap before and after in one fragment (the fixture theory must fail).
@@ -1567,13 +1629,18 @@ public enum AnchorKind { None, Insert, Delete, CurrentRow }
 public sealed record ReplayResult(byte[]? Before, byte[]? After, AnchorKind Anchor, string? AnchorLsn, string Status, bool IncludesUnknownOutcome);
 public static class RowReplayer
 {
-    /// <summary>chain : tous les enregistrements de cette ligne (insert, delete, modify, compensations comprises), dans l'ordre des LSN.
+    /// <summary>chain : les enregistrements de données de cette ligne (insert, delete, modify), dans l'ordre des LSN ;
+    /// les compensations n'y sont pas (elles n'ont pas de clé, spec03 §7.1). outcomes : par Transaction ID ;
+    /// une transaction absente du dictionnaire, ou un TransactionId null, vaut Unknown.
     /// currentRow : image de l'ancre 3 (après le dernier enregistrement de chain), ou null.</summary>
     public static ReplayResult Replay(IReadOnlyList<LogRecord> chain, string selectedLsn,
-        IReadOnlyDictionary<string, TxOutcome> outcomes, byte[]? currentRow = null);
+        IReadOnlyDictionary<string, TxOutcome> outcomes, IReadOnlySet<string> adrReverts, byte[]? currentRow = null);
 
     /// <summary>Classe les transactions d'après leurs enregistrements (LOP_COMMIT_XACT, LOP_ABORT_XACT, compensations, LOP_CTR_NEST_ABORT).</summary>
     public static IReadOnlyDictionary<string, TxOutcome> Classify(IEnumerable<LogRecord> transactionRecords);
+
+    /// <summary>Transactions partiellement annulées par une révocation ADR : LOP_CTR_NEST_ABORT sans aucun enregistrement de compensation (spec03 §7.3).</summary>
+    public static IReadOnlySet<string> AdrReverts(IEnumerable<LogRecord> transactionRecords);
 }
 ```
 
@@ -1584,26 +1651,27 @@ Status strings, exact (the UI shows them): `"rebuilt forwards from INSERT at LSN
 Build chains by hand from the spec §2 bytes, and from the `modify` fixture per version. Hand-built cases:
 1. insert, modify `a` 10 to 11, modify `b` to `abcdef`; selected = second modify: `Before` holds `a = 11, b = 'abc'`, `After` holds `b = 'abcdef'`, anchor `Insert`;
 2. same chain plus a delete whose image is the final row, with the insert removed: anchor `Delete`, same `Before` and `After`;
-3. a modify of a transaction classified `RolledBack` followed by its compensation, between two committed modifies: the rolled-back pair is skipped forwards and backwards, and the result equals the chain without it;
-4. selected = the rolled-back modify itself: `After` shows its change, status starts with `"rebuilt forwards"`, and the compensation is not applied;
+3. a modify of a transaction classified `RolledBack`, between two committed modifies: it is skipped forwards and backwards, and the result equals the chain without it;
+4. selected = the rolled-back modify itself: `After` shows its change, status starts with `"rebuilt forwards"`;
 5. a modify of a `PartlyRolledBack` transaction before the selected record: status `"partial rollback at LSN …, not replayed"`;
 6. a modify whose before bytes do not match: `"chain broken at LSN …"`;
-7. backwards from a delete across a compensation record of a `PartlyRolledBack` transaction (a compensation exists only in a rolled-back or partly rolled-back transaction): status `"partial rollback at LSN …, not replayed"`;
+7. a record of a transaction in `adrReverts` placed AFTER the selected record, with a delete anchor after it: status `"partial rollback at LSN …, not replayed"` (spec §7.3: an ADR revert anywhere in the chain stops every replay of the row); the same chain with that transaction `PartlyRolledBack` but not in `adrReverts`: backward replay from the delete succeeds, since it never crosses the record;
 8. an `Unknown` outcome modify in the chain: `IncludesUnknownOutcome` true;
 9. no insert, no delete, no current row: `"no full image of this row available"`;
 10. `currentRow` given and no delete: anchor `CurrentRow`;
 11. a heap modify whose after bytes start with a forwarding-stub status byte (record type 2, `0x04`): `"row forwarded, not followed"`;
-12. `Classify`: a transaction with `LOP_ABORT_XACT` is `RolledBack`; with `LOP_COMMIT_XACT` and a compensation record is `PartlyRolledBack`; with `LOP_COMMIT_XACT` and `LOP_CTR_NEST_ABORT` is `PartlyRolledBack`; with only `LOP_COMMIT_XACT` is `Committed`; with neither is `Unknown`.
+12. `Classify`: a transaction with `LOP_ABORT_XACT` is `RolledBack`; with `LOP_COMMIT_XACT` and a compensation record is `PartlyRolledBack`; with `LOP_COMMIT_XACT` and `LOP_CTR_NEST_ABORT` is `PartlyRolledBack`; with only `LOP_COMMIT_XACT` is `Committed`; with neither is `Unknown`. `AdrReverts` holds the transaction with `LOP_CTR_NEST_ABORT` and no compensation, not the one with both;
+13. a record whose `TransactionId` is null or absent from `outcomes` is treated as `Unknown` (no exception).
 
-Fixture theories over the four versions on `modify` (`dbo.t`): for each `LOP_MODIFY_ROW` the scenario applied to row 1, the replayed `After` decodes, with `RowDecoder`, to the values the scenario set at that statement (write them in the test from `modify.sql`); the `TABLOCKX` update is in the chain; the savepoint transaction is `PartlyRolledBack` and stops the chain at its first record.
+Fixture theories over the four versions on `modify` (`dbo.t`, no ADR): for each `LOP_MODIFY_ROW` the scenario applied to row 1 before the savepoint transaction, the replayed `After` decodes, with `RowDecoder`, to the values the scenario set at that statement (write them in the test from `modify.sql`); the `TABLOCKX` update is in the chain; the savepoint transaction is `PartlyRolledBack`, not in `AdrReverts` (it has compensation records), and its records report `"partial rollback at LSN …, not replayed"`. On `versioned_adr` (2019 and later): the savepoint transaction is in `AdrReverts`, and every modify of `dbo.vr` id 1 reports `"partial rollback at LSN …, not replayed"`, including the ones before it.
 
 - [ ] Step 2: Run to verify they fail. Build failure.
 - [ ] Step 3: Implement
 
-Follow spec §7.3 literally: drop records of `RolledBack` transactions other than the selected record's; when the selected record's transaction is `RolledBack`, keep its records up to the selected one and drop its compensations. Forward: the anchor is the last `LOP_INSERT_ROWS` before the selected record with no `LOP_DELETE_ROWS` between them; apply each following record up to the selected one with `ModifyDecoder.ApplyForward`, stopping on a `PartlyRolledBack` record, a `null` decode, or a `ReplayCheckException`. Backward: the anchor is the first `LOP_DELETE_ROWS` after the selected record with no insert between them, else `currentRow`; undo each record from the anchor back to the selected one with `ApplyBackward`, stopping the same way and on a compensation fragment. A row image whose first byte has record type 2 ends the chain with `"row forwarded, not followed"`. Try forward first, then backward; return the first success, else the most informative failure (a broken chain over "no full image").
+Follow spec §7.3 literally: if any record of the chain belongs to a transaction in `adrReverts`, stop at once with `"partial rollback at LSN {that record's LSN}, not replayed"`. Drop records of `RolledBack` transactions other than the selected record's; when the selected record's transaction is `RolledBack`, keep its records up to the selected one. Forward: the anchor is the last `LOP_INSERT_ROWS` before the selected record with no `LOP_DELETE_ROWS` between them; apply each following record up to the selected one with `ModifyDecoder.ApplyForward`, stopping on a `PartlyRolledBack` record, a `null` decode, or a `ReplayCheckException`. Backward: the anchor is the first `LOP_DELETE_ROWS` after the selected record with no insert between them, else `currentRow`; undo each record from the anchor back to the selected one with `ApplyBackward`, stopping the same way and on a compensation fragment. A row image whose first byte has record type 2 ends the chain with `"row forwarded, not followed"`. Try forward first, then backward; return the first success, else the most informative failure (a broken chain over "no full image").
 
 - [ ] Step 4: Run to verify they pass, stating the count.
-- [ ] Step 5: Break and confirm: keep rolled-back records in the chain (case 3 must fail); treat `PartlyRolledBack` as `Committed` (case 5 and the savepoint fixture must fail); ignore the selected record's own transaction rule (case 4 must fail); choose the first insert instead of the last (write the test that catches it first if none does, and say so).
+- [ ] Step 5: Break and confirm: keep rolled-back records in the chain (case 3 must fail); treat `PartlyRolledBack` as `Committed` (case 5 and the savepoint fixture must fail); ignore `adrReverts` (case 7 and the `versioned_adr` theory must fail); ignore the selected record's own transaction rule (case 4 must fail); choose the first insert instead of the last (write the test that catches it first if none does, and say so).
 - [ ] Step 6: Commit: `feat: replay a row's chain forwards and backwards`.
 
 ---
@@ -1630,21 +1698,24 @@ public sealed record Inspection(
     IReadOnlyList<ColumnChange> Changes,   // modify: from Before/After, else from the fragment alone (§6.1)
     string? ReplayStatus, TxOutcome? Outcome, bool IncludesUnknownOutcome,
     string? SchemaMessage,                 // "a schema connection is required", "allocation unit not found in the connected database"
+    string? Label,                         // "row moved by the engine" (spec §5), else null
+    string? Warning,                       // "may hold values undone by a partial rollback" (spec §7.3), "key not decodable" (spec §7.1)
     bool CanRebuildFromCurrentRow);
 public sealed class DecodingService
 {
     public DecodingService(LogCache cache, Func<long, CancellationToken, Task<TableSchema?>>? schemaLookup, bool isLive);
     public Task<Inspection> InspectAsync(LogRecord record, CancellationToken ct = default);
-    public Task<Inspection> InspectWithCurrentRowAsync(LogRecord record, byte[] currentRow, CancellationToken ct = default);
 }
 ```
 
-`LogQuery` gains: `Task<IReadOnlyList<LogRecord>> GetUnkeyedDataRecordsAsync(long allocUnitId, CancellationToken)`, `Task<IReadOnlyList<LogRecord>> GetChainAsync(long allocUnitId, string rowKey, CancellationToken)`, `Task<IReadOnlyList<LogRecord>> GetHeapChainAsync(long allocUnitId, string pageId, int slotId, CancellationToken)` (all ordered by LSN), and `Task<IReadOnlyList<LogRecord>> GetTransactionRecordsAsync(IReadOnlyCollection<string> transactionIds, CancellationToken)` (the begin, commit, abort, nest-abort and compensation records of those transactions).
+Data records are those whose `Context` is `LCX_HEAP`, `LCX_CLUSTERED` or `LCX_MARK_AS_GHOST` (the log also holds `LCX_PFS` records carrying the table's `AllocUnitId`; they must never be keyed nor enter a chain). System transaction names that move rows: `SplitPage` plus those listed in `docs/research/rowlog-layouts.md` (Task 4).
+
+`LogQuery` gains: `Task<IReadOnlyList<LogRecord>> GetUnkeyedDataRecordsAsync(long allocUnitId, CancellationToken)` (data records only), `Task<IReadOnlyList<LogRecord>> GetChainAsync(long allocUnitId, string rowKey, CancellationToken)`, `Task<IReadOnlyList<LogRecord>> GetHeapChainAsync(long allocUnitId, string pageId, int slotId, CancellationToken)` (all ordered by LSN), and `Task<IReadOnlyList<LogRecord>> GetTransactionRecordsAsync(IReadOnlyCollection<string> transactionIds, CancellationToken)` (the begin, commit, abort, nest-abort and compensation records of those transactions). Chains contain data records only.
 
 - [ ] Step 1: Write the failing tests
 
 Load a fixture into a temporary `LogCache` (`FixtureSet.Load(v, "modify").Log` through `InsertBatchAsync`), with `schemaLookup` serving the fixture's schemas. Assert, per version:
-- inspecting each `dbo.t` modify gives `After` values as in `modify.sql` and `ReplayStatus` starting with `"rebuilt"`, and fills `RowKey` for every `dbo.t` data record except compensations;
+- inspecting each `dbo.t` modify before the savepoint transaction gives `After` values as in `modify.sql` and `ReplayStatus` starting with `"rebuilt"`; inspecting a record of the savepoint transaction gives `"partial rollback at LSN …, not replayed"`; and the first inspection fills `RowKey` for every `dbo.t` data record (contexts above) except compensations, and for no `LCX_PFS` record;
 - inspecting the `dbo.s` update of id 1 (after `id = 0` shifted slots) rebuilds `id = 1, a = 11`, never `id = 2`;
 - inspecting a `dbo.t` modify with `schemaLookup` null gives `Row`/`Before`/`After` null, `SchemaMessage == "a schema connection is required"`, and no exception;
 - with a lookup that returns null for the allocation unit: `SchemaMessage == "allocation unit not found in the connected database"` and the record's `RowLogContents0` still decoded without a schema in `Row` (insert) or nothing for a modify;
@@ -1652,12 +1723,20 @@ Load a fixture into a temporary `LogCache` (`FixtureSet.Load(v, "modify").Log` t
 - inspecting the `dbo.t` modify of the rolled-back transaction gives `Outcome == RolledBack`;
 - importing the `modify` fixture twice (two `InsertBatchAsync` calls) changes no result.
 
-And `schema_change`: the `dbo.rb` update after the rebuild has its own allocation unit and its chain does not include the insert before the rebuild (status `"no full image of this row available"` unless the current row is used).
+And `schema_change`: the `dbo.rb` update after the rebuild has its own allocation unit and its chain does not include the insert before the rebuild (status `"no full image of this row available"`).
+
+And `keys`: inspecting the delete of `dbo.ix` on the nonclustered index, with its schema available (`IndexId == 2`), yields `Row` with no column (spec §5 admission rule: context and `IsDataRows` are checked before decoding, record type alone is not enough).
+
+And `heap`: inspecting the update of `id = 1` rebuilds `id = 1, v = 11` from its insert, and the insert of `id = 2` at the same address does not enter that chain; the update of `id = 101` whose after bytes are a forwarding stub reports `"row forwarded, not followed"` (if the fixture shows no forwarding on a version, assert what it shows and say so).
+
+And `split`: the update of `dbo.sp` `id = 4` after the page split is rebuilt (the key does not change on a split), and the split's own `LOP_INSERT_ROWS` carries `Label == "row moved by the engine"` when its `LOP_BEGIN_XACT` named `SplitPage` is in the fixture.
+
+And `versioned_adr` (2019 and later): the delete of `dbo.vr` id 1 carries `Warning == "may hold values undone by a partial rollback"`.
 
 - [ ] Step 2: Run to verify they fail. Build failure.
-- [ ] Step 3: Implement. For an insert or a delete: `Row = RowDecoder.Decode(Rlc0, schema)`. For a modify: key the allocation unit (`GetUnkeyedDataRecordsAsync`, `KeyDecoder.FromRow` for inserts and deletes, `KeyDecoder.FromIndexRecord(Rlc2)` for non-compensation modifies, then `SetRowKeysAsync`; heaps use `GetHeapChainAsync` and no key), read the chain, add to it the compensation records of the transactions present in it (they carry no key, spec §7.1; match them to the chain by `TransactionId`, `PageId` and `SlotId`), classify the transactions, replay, decode `Before` and `After`, and compute `Changes` by comparing the two `DecodedRow.Columns` by name. Without replay, attribute the fragment from the schema alone (spec §6.1): a fragment entirely inside one fixed column or one bit byte names the column, and gives values when it covers the whole column.
+- [ ] Step 3: Implement. Admission (spec §5): an insert or a delete is decoded as a data row only when its context is a data context and, when a schema is available, `schema.IsDataRows`; otherwise `Row = RowDecoder.Decode(Rlc0, null)` restricted to raw bytes (no columns). For a decoded insert or delete: `Row = RowDecoder.Decode(Rlc0, schema)`, `Label` from the transaction name, `Warning` when the row's chain holds a record of an ADR revert. For a modify: key the allocation unit before every chain lookup (`GetUnkeyedDataRecordsAsync`, `KeyDecoder.FromRow` for inserts and deletes, `KeyDecoder.FromIndexRecord(Rlc2)` for non-compensation modifies, then `SetRowKeysAsync`; heaps use `GetHeapChainAsync` and no key); a selected modify whose own key is `null` gets `Warning == "key not decodable"` and no replay. Read the chain (data records only, no compensation: spec §7.3 handles rollbacks by transaction), read the transaction records of every `TransactionId` in the chain, `Classify` and `AdrReverts` them, replay, decode `Before` and `After`, and compute `Changes` by comparing the two `DecodedRow.Columns` by name, values compared through `Convert.ToString(value, CultureInfo.InvariantCulture)` so that a default read from the catalog as the text `"7"` equals the integer 7 of a later row. Without replay, attribute the fragment from the schema alone (spec §6.1): a fragment entirely inside one fixed column or one bit byte names the column, and gives values when it covers the whole column.
 - [ ] Step 4: Run to verify they pass, stating the count.
-- [ ] Step 5: Break and confirm: key the chain on `(PageId, SlotId)` for a clustered table (the `dbo.s` test must fail); do not fill keys of records added after the first keying (write a test that inserts more records after a first inspection, then inspects again; it must fail under the break).
+- [ ] Step 5: Break and confirm: key the chain on `(PageId, SlotId)` for a clustered table (the `dbo.s` test must fail); do not fill keys of records added after the first keying (write a test that inserts more records after a first inspection, then inspects again; it must fail under the break); drop the context filter of `GetUnkeyedDataRecordsAsync` (the `LCX_PFS` assertion must fail); drop the `IsDataRows` admission check (the `dbo.ix` test must fail).
 - [ ] Step 6: Commit: `feat: inspect a log record with its rebuilt row`.
 
 ---
@@ -1679,34 +1758,75 @@ Files:
 
 ### Task 12: Current-row reader (anchor 3)
 
-Spec §7.2, live mode, clustered tables, no ADR.
+Spec §7.2, live mode, clustered tables, no ADR, modify records only (an insert or a delete is its own full image).
 
 Files:
 - Create: `Backends/CurrentRowReader.cs`
-- Modify: `Services/DecodingService.cs` (add `Task<Inspection> RebuildFromCurrentRowAsync(LogRecord record, CurrentRowReader reader, CancellationToken)`)
-- Test: `tests/SqlLogExplorer.Tests/Integration/CurrentRowReaderIntegrationTests.cs`, `tests/SqlLogExplorer.Tests/CurrentRowParsingTests.cs`
+- Modify: `Decoding/KeyDecoder.cs` (add `ValuesFromIndexRecord`), `Services/DecodingService.cs` (add `RebuildFromCurrentRowAsync`)
+- Test: `tests/SqlLogExplorer.Tests/CurrentRowParsingTests.cs`, `tests/SqlLogExplorer.Tests/Integration/CurrentRowReaderIntegrationTests.cs`
 
 Interfaces:
+- Consumes: `TableSchema`, `KeyDecoder`, `TypeDecoder`, `Lsn`, `LogColumns`, `DecodingService` (Task 10), `LogCache.InsertBatchAsync`.
 - Produces:
 
 ```csharp
-public sealed record CurrentRowResult(byte[]? Row, IReadOnlyList<LogRecord> NewRecords, string? Unavailable);
+public sealed record CurrentRowResult(byte[]? Row, string? Unavailable);
 public sealed class CurrentRowReader
 {
-    public CurrentRowReader(string connectionString);
+    public CurrentRowReader(string connectionString);   // chaîne vers la base analysée
     public Task<bool> IsAvailableForDatabaseAsync(CancellationToken ct = default);   // false when ADR is on
+    /// <summary>acceptSuffix reçoit les enregistrements lus depuis le dernier LSN du cache, pendant que la ligne est tenue ;
+    /// il les ajoute au cache, les indexe, et rend false si la ligne a été supprimée après l'enregistrement choisi.</summary>
     public Task<CurrentRowResult> ReadAsync(TableSchema schema, IReadOnlyList<(SchemaColumn Column, object? Value)> key,
-        string lastCachedLsn, CancellationToken ct = default);
-    internal static byte[]? ParseSlotDump(IEnumerable<(string ParentObject, string Field, string Value)> lines, int slot);
+        string lastCachedLsn, Func<IReadOnlyList<LogRecord>, CancellationToken, Task<bool>> acceptSuffix, CancellationToken ct = default);
+    internal static byte[]? ParseSlotDump(IEnumerable<(string ParentObject, string Value)> lines, int slot);
 }
+// KeyDecoder
+public static IReadOnlyList<(SchemaColumn Column, object? Value)>? ValuesFromIndexRecord(byte[] record, TableSchema schema);
+// DecodingService
+public Task<Inspection> RebuildFromCurrentRowAsync(LogRecord record, CurrentRowReader reader, CancellationToken ct = default);
 ```
 
-`ReadAsync` follows spec §7.2 steps 1 to 5 in that order, on one connection, one `SERIALIZABLE` transaction, `SET LOCK_TIMEOUT 5000`. The key values come from `KeyDecoder` decoding of the selected record (add `KeyDecoder.ValuesFromIndexRecord(byte[] record, TableSchema schema)` returning the typed values via `TypeDecoder`). The seek is built with parameters, `IS NULL` for null key columns, and quoted identifiers (`QUOTENAME` semantics: `[` + name.Replace("]", "]]") + `]`). The log suffix uses `Lsn.ToFnDblogArgument(lastCachedLsn)` and checks the first record returned equals `lastCachedLsn`. Messages, exact: `"row locked by an open transaction"`, `"log truncated since the import, re-import to use the current row"`, `"current row is not this row"`, `"not available on a database with Accelerated Database Recovery"`, `"not available for a heap"`.
+`ReadAsync` runs on one connection, inside one transaction at `SERIALIZABLE` isolation, after `SET LOCK_TIMEOUT 5000`, in this order (spec §7.2):
+1. seek: `SELECT sys.fn_PhysLocFormatter(%%physloc%%) FROM [schema].[table] WITH (ROWLOCK, HOLDLOCK) WHERE ...`, with `SchemaName` and `TableName` quoted separately (`"[" + name.Replace("]", "]]") + "]"`), one parameter per key column, `[col] IS NULL` for a null key value; a lock timeout (error 1222) returns `"row locked by an open transaction"`, no row returns `"current row is not this row"`;
+2. suffix: `SELECT <LogColumns.SelectList> FROM sys.fn_dblog(@start, NULL)` with `@start = Lsn.ToFnDblogArgument(lastCachedLsn)`; the first record's `Lsn` (normalized, `LogColumns.Read` does it) must equal `Lsn.Normalize(lastCachedLsn)`, else `"log truncated since the import, re-import to use the current row"`;
+3. `acceptSuffix(records)`; `false` returns `"row deleted since: the DELETE anchor applies"`;
+4. `DBCC PAGE (DB_NAME(), <file>, <page>, 1) WITH TABLERESULTS` for each address the seek returned;
+5. commit; keep the slot whose bytes are a primary record (type 0) and whose `KeyDecoder.FromRow` equals the row's key, else `"current row is not this row"`.
 
-- [ ] Step 1: Unit test `ParseSlotDump` on the `Style == 1` lines of a fixture (`Fixture.Pages`): the bytes of slot 0 of the page holding `dbo.u` equal the replayed final row of `dbo.u` id 2 from Task 10.
-- [ ] Step 2: Integration tests (2022 container from `sqlserver.sh`, setup and tests in one invocation): an update made after the import is crossed and the rebuilt row is right; a session holding an open `UPDATE` on the row makes the read return `"row locked by an open transaction"` within ten seconds; a `BACKUP LOG` between import and read returns the truncation message; an ADR database returns `false` from `IsAvailableForDatabaseAsync`; a nullable key with `NULL` is found; a non-unique clustered key picks the right uniqueifier.
-- [ ] Step 3: Break and confirm: take the row lock after reading the log suffix instead of before (the concurrent-update test must be written so that it fails then; say whether it does); skip the first-record check (the truncation test must fail).
-- [ ] Step 4: Commit: `feat: rebuild a row backwards from its current bytes`.
+`DBCC PAGE (…, 1) WITH TABLERESULTS` returns four columns, `ParentObject`, `Object`, `Field`, `VALUE`. A slot's memory dump lines have `ParentObject` = `Slot 0, Offset 0x60, Length 22, DumpStyle BYTE` and `VALUE` = `0000000000000000:   30000c00 07000000 02000000 03000001 00160061  0..................a` (measured on 2022): an offset, a colon, three spaces, a 44-character hex area of up to five 4-byte groups, two spaces, then an ASCII rendering that can itself look like hex (`bc`). `ParseSlotDump` takes the 44 characters after `":   "`, removes the spaces, concatenates the lines of the slot in order, and truncates to the `Length` of `ParentObject`. Never parse the ASCII part.
+
+`RebuildFromCurrentRowAsync` checks `IsAvailableForDatabaseAsync` (`"not available on a database with Accelerated Database Recovery"`), the heap case (`"not available for a heap"`), decodes the key values from the selected record's `RowLogContents2`, passes an `acceptSuffix` that inserts the records into the cache, keys them, and returns `false` when the chain now holds a delete of the row after the selected record (the service then inspects again and anchor 2 applies), and finally replays with `currentRow`.
+
+- [ ] Step 1: Write the failing tests
+
+`CurrentRowParsingTests`: `ParseSlotDump` on the `Style == 1` lines of the `modify` fixture of each version returns, for the slot holding `dbo.u` id 2, bytes that `RowDecoder` decodes to `id = 2, a = 100, b = 'zz'`; and on the two literal lines above (slot 0, length 22) returns `30000c00070000000200000003000001001600616263` as bytes.
+
+`CurrentRowReaderIntegrationTests` (one 2022 container from `sqlserver.sh`, a fresh database per test, `FULL` recovery after a full backup):
+- an update made after the import is crossed: import, `UPDATE` from another connection, rebuild from the current row, the `Before` of the selected record is right;
+- order of the steps: an `acceptSuffix` callback that tries, from a second connection with `SET LOCK_TIMEOUT 1000`, to update the same row must get error 1222 (the row is held since step 1);
+- a session holding an open `UPDATE` on the row makes `ReadAsync` return `"row locked by an open transaction"` within ten seconds;
+- truncation: after the import, generate log until truncation really happens (loop: insert 1000 rows into a filler table, `BACKUP LOG` to a file, `CHECKPOINT`, until `SELECT MIN([Current LSN]) FROM sys.fn_dblog(NULL, NULL)`, normalized, sorts after the cache's last LSN; at most 20 rounds, and the test fails if truncation never happens), then `ReadAsync` returns the truncation message;
+- an ADR database: `IsAvailableForDatabaseAsync` is false;
+- a nullable key holding `NULL` is found (`IS NULL` predicate);
+- a non-unique clustered key picks the slot whose uniqueifier matches;
+- a table in a schema other than `dbo` (`CREATE SCHEMA s; CREATE TABLE s.t ...`) is found.
+
+Run them before implementing: `CurrentRowParsingTests` must fail to compile (`ParseSlotDump` missing); say so.
+
+- [ ] Step 2: Implement `ValuesFromIndexRecord` (the index-record walk of Task 7, returning typed values through `TypeDecoder`), `CurrentRowReader`, and `RebuildFromCurrentRowAsync`.
+
+- [ ] Step 3: Run, setup and tests in ONE invocation:
+
+```bash
+eval "$(bash tests/fixtures/sqlserver.sh up 2022 sle-it-t12)" && dotnet test tests/SqlLogExplorer.Tests --filter "FullyQualifiedName~CurrentRowParsingTests|FullyQualifiedName~CurrentRowReaderIntegrationTests"; bash tests/fixtures/sqlserver.sh down sle-it-t12
+```
+
+Expected: 0 skipped; state the count.
+
+- [ ] Step 4: Break and confirm, printing each mutated line: run the seek after the suffix read (the order test must fail); skip the first-record check (the truncation test must fail); drop `IS NULL` (the nullable key test must fail); quote `ObjectName` as one name (the schema test must fail).
+
+- [ ] Step 5: Commit: `feat: rebuild a row backwards from its current bytes`.
 
 ---
 
@@ -1722,9 +1842,10 @@ Files:
 Interfaces:
 - `RecordsViewModel(LogQuery query, int pageSize = 200)`: `ObservableCollection<LogRecord> Records`, `LogRecord? SelectedRecord`, `int PageIndex`, commands `NextPage`, `PreviousPage`, `Task LoadAsync()`.
 - `InspectorViewModel(DecodingService service, CurrentRowReader? reader)`: `Task InspectAsync(LogRecord)`, properties `string Title`, `ObservableCollection<ColumnChange> Values`, `ObservableCollection<ByteChunk> Bytes` (`sealed record ByteChunk(string ContentName, int Offset, string Hex, FieldRole? Role, string Tooltip)`), `string? ReplayStatus`, `string? SchemaMessage`, `bool CanRebuildFromCurrentRow`, command `RebuildFromCurrentRow`.
-- `MainWindowViewModel` creates both after an import; offline it shows a "Connect schema source…" button opening the existing `ConnectionDialog`, whose connection string feeds a `SchemaProvider` (and its `IsPrivilegedAsync` result, shown as a warning when false).
+- `MainWindowViewModel` keeps the live connection string given to `LoadLiveAsync` (it does not today), and creates both view-models after an import: live, with a `SchemaProvider` and a `CurrentRowReader` on that connection string; offline, with no schema lookup. Offline it shows a "Connect schema source…" button opening the existing `ConnectionDialog`; `Task ConnectSchemaSourceAsync(string connectionString)` creates a `SchemaProvider`, shows a warning when `IsPrivilegedAsync` is false, and replaces the `DecodingService` and the `InspectorViewModel` (a `DecodingService` is immutable: its lookup is set at construction).
+- `CanRebuildFromCurrentRow` is true only for a modify record, live, on a clustered table, when anchors 1 and 2 failed and `CurrentRowReader.IsAvailableForDatabaseAsync` is true.
 
-- [ ] Step 1: View-model tests with a cache loaded from the `modify` fixture of 2022: `LoadAsync` fills 200 records max in LSN order; `NextPage` moves on; selecting the first `dbo.t` modify fills `Values` with `a` changed and `ReplayStatus` starting with `"rebuilt"`; `Bytes` has one chunk per `DecodedField` of each non-empty contents, plus plain hex chunks (`Role == null`) for contents not decoded; without a schema, `SchemaMessage == "a schema connection is required"`.
+- [ ] Step 1: View-model tests (they fail to compile before Step 2; say so) with a cache loaded from the `modify` fixture of 2022: `LoadAsync` fills 200 records max in LSN order; `NextPage` moves on; selecting the first `dbo.t` modify fills `Values` with `a` changed and `ReplayStatus` starting with `"rebuilt"`; `Bytes` has one chunk per `DecodedField` of each non-empty contents, plus plain hex chunks (`Role == null`) for contents not decoded; without a schema, `SchemaMessage == "a schema connection is required"`; after `ConnectSchemaSourceAsync` with a lookup serving the fixture's schemas (inject it through an internal constructor taking the lookup delegate), the same record decodes; `CanRebuildFromCurrentRow` is false offline.
 - [ ] Step 2: Implement the view-models, then the view: a `TabItem Header="Records"` before the statistics tabs, holding a `DataGrid` (`LSN`, `Operation`, `Context`, `AllocUnitName`, `TransactionId`) bound to `Records.Records` and `Records.SelectedRecord`, previous/next buttons, and below it a `TabControl` with "Values" (`DataGrid` of `Column`, `Before`, `After`, changed rows highlighted) and "Bytes" (`ItemsControl` with a `WrapPanel`, each chunk a `Border` whose background comes from the role through a converter, `ToolTip.Tip` bound to `Tooltip`), the replay status line and the "Rebuild from the current row" button bound to `CanRebuildFromCurrentRow`.
 - [ ] Step 3: Run the app against a 2022 container (`dotnet run`), import live, select a modify of a table you created, and take a screenshot of each tab; attach the paths in your report. If the session cannot show a window, say so; do not claim the UI works from the tests alone.
 - [ ] Step 4: Full suite, then commit: `feat: records grid with a decoding inspector`.
