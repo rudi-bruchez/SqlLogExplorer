@@ -136,6 +136,74 @@ public class ModifyDecoderTests(ITestOutputHelper output)
         Assert.Null(ModifyDecoder.Decode(r with { NumElements = null }));
     }
 
+    private static LogRecord WithBytes(Action<byte[]> edit)
+    {
+        var r = Record("2022", "modify", "dbo.u", 0);
+        var b = (byte[])r.LogRecordBytes!.Clone();
+        edit(b);
+        return r with { LogRecordBytes = b };
+    }
+
+    private static void SetU16(byte[] b, int at, int v) { b[at] = (byte)v; b[at + 1] = (byte)(v >> 8); }
+
+    [Fact]
+    public void ModifyColumns_WithZeroFragments_IsUnknown()   // n = 0 : 4 éléments
+    {
+        var r = WithBytes(b => SetU16(b, U16(b, 2), 4));
+
+        Assert.Null(ModifyDecoder.Decode(r with { NumElements = 4 }));
+    }
+
+    [Fact]
+    public void ModifyColumns_WithOddElementZeroLength_IsUnknown()
+    {
+        var r = WithBytes(b => SetU16(b, U16(b, 2) + 2, 5));
+
+        Assert.Null(ModifyDecoder.Decode(r));
+    }
+
+    [Fact]
+    public void ModifyColumns_WithHeaderLengthPastTheEnd_IsUnknown()
+    {
+        var r = WithBytes(b => SetU16(b, 2, 0xFFFF));
+
+        Assert.Null(ModifyDecoder.Decode(r));
+    }
+
+    [Fact]
+    public void ModifyColumns_WhoseBeforeLengthIsNotTheReplacedLength_IsUnknown()
+    {
+        // En-tête 62, compte 8 : longueurs de 64 à 80, élément 0 (8 octets) à 80, élément 1 à 88 : lb_0 est son premier u16.
+        var shortened = WithBytes(b => SetU16(b, 88, 2));   // lb_0 passe de 1 à 2, l'avant en garde 1
+
+        Assert.Null(ModifyDecoder.Decode(shortened));
+    }
+
+    [Fact]
+    public void ModifyRow_WithoutOffset_IsUnknown()
+    {
+        Assert.Null(ModifyDecoder.Decode(ModifyRow(Hex("0A"), Hex("0B"), 8, 1) with { OffsetInRow = null }));
+        Assert.Null(ModifyDecoder.Decode(ModifyRow([], Hex("0B"), 8, 1, "COMPENSATION") with { ModifySize = null }));
+    }
+
+    [Fact]
+    public void Fragment_WhoseBeforeIsLongerThanItsReplacedLength_ThrowsReplayCheck()
+    {
+        Assert.Throws<ReplayCheckException>(() => ModifyDecoder.ApplyForward(SpecRow, new Fragment(20, new byte[10], new byte[1], 1)));
+    }
+
+    [Fact]
+    public void ExtremeOffsets_ThrowReplayCheck_NotOverflow()
+    {
+        Assert.Throws<ReplayCheckException>(() => ModifyDecoder.ApplyForward(SpecRow, new Fragment(int.MaxValue, [], [1], 5)));
+        Assert.Throws<ReplayCheckException>(() => ModifyDecoder.ApplyForward(SpecRow, new Fragment(int.MaxValue, Hex("0A"), Hex("0B"), 1)));
+        Assert.Throws<ReplayCheckException>(() => ModifyDecoder.ApplyForward(SpecRow, new Fragment(8, [], [1], int.MaxValue)));
+        Assert.Throws<ReplayCheckException>(() => ModifyDecoder.ApplyForward(SpecRow, new Fragment(8, [], [1], -3)));
+        Assert.Throws<ReplayCheckException>(() => ModifyDecoder.ApplyBackward(SpecRow, new Fragment(int.MaxValue, Hex("0A"), Hex("0B"), 1)));
+    }
+
+    private static int U16(byte[] b, int at) => b[at] | b[at + 1] << 8;
+
     // ---- Rejeu des fixtures : de l'image d'insert à l'image de delete ----
 
     private sealed class RowState(byte[] bytes) { public byte[] Bytes = bytes; public int Modifications; }

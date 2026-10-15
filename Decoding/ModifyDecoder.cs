@@ -16,16 +16,18 @@ public static class ModifyDecoder
     /// <summary>null = disposition inconnue (spec03 §6.2) ; liste vide jamais renvoyée pour un enregistrement de modification.</summary>
     public static IReadOnlyList<Fragment>? Decode(LogRecord record) => record.Operation switch
     {
-        "LOP_MODIFY_ROW" => [DecodeRow(record)],
+        "LOP_MODIFY_ROW" => DecodeRow(record) is { } f ? [f] : null,
         "LOP_MODIFY_COLUMNS" => DecodeColumns(record),
         _ => null,
     };
 
-    private static Fragment DecodeRow(LogRecord r)
+    private static Fragment? DecodeRow(LogRecord r)
     {
+        if (r.OffsetInRow is not { } offset) return null;   // pas de décalage : disposition inconnue, on n'invente pas 0
         var before = r.RowLogContents0 ?? [];
         // Compensation : ModifySize est la longueur remplacée, pas celle des octets restaurés.
-        return new Fragment(r.OffsetInRow ?? 0, before, r.RowLogContents1 ?? [], r.IsCompensation ? r.ModifySize ?? 0 : before.Length);
+        if (r.IsCompensation && r.ModifySize is null) return null;
+        return new Fragment(offset, before, r.RowLogContents1 ?? [], r.IsCompensation ? r.ModifySize!.Value : before.Length);
     }
 
     private static int Pad4(int n) => (n + 3) & ~3;
@@ -60,7 +62,10 @@ public static class ModifyDecoder
         {
             var oa = U16(b, elements[0].Start + 4 * i + 2);   // paires (ob, oa) : on applique à oa, le décalage courant
             var lb = U16(b, elements[1].Start + 2 * i);
-            fragments.Add(new Fragment(oa, Slice(b, elements[4 + 2 * i]), Slice(b, elements[5 + 2 * i]), lb));
+            var before = Slice(b, elements[4 + 2 * i]);
+            // Avant : lb octets, ou rien dans une compensation ; tout autre longueur est une disposition inconnue.
+            if (before.Length != (r.IsCompensation ? 0 : lb)) return null;
+            fragments.Add(new Fragment(oa, before, Slice(b, elements[5 + 2 * i]), lb));
         }
         return fragments;
     }
@@ -72,7 +77,8 @@ public static class ModifyDecoder
     {
         // Avant vide avec une longueur remplacée non nulle : compensation, les octets d'avant ne sont pas journalisés.
         var compensation = f.Before.Length == 0 && f.ForwardLength > 0;
-        if (f.Offset < 0 || f.Offset + f.ForwardLength > row.Length)
+        // long : un décalage proche de int.MaxValue ne doit pas déborder.
+        if (f.Offset < 0 || f.ForwardLength < 0 || (long)f.Offset + Math.Max(f.ForwardLength, f.Before.Length) > row.Length)
             throw new ReplayCheckException($"Fragment at {f.Offset} (+{f.ForwardLength}) runs past the row ({row.Length} bytes).");
         if (!compensation && !row.AsSpan(f.Offset, f.Before.Length).SequenceEqual(f.Before))
             throw new ReplayCheckException($"The bytes before the change are not in the row at offset {f.Offset}.");
@@ -83,7 +89,7 @@ public static class ModifyDecoder
     {
         if (f.Before.Length == 0 && f.ForwardLength > 0)
             throw new ReplayCheckException("A compensation record does not log the bytes it replaced and cannot be undone.");
-        if (f.Offset < 0 || f.Offset + f.After.Length > row.Length || !row.AsSpan(f.Offset, f.After.Length).SequenceEqual(f.After))
+        if (f.Offset < 0 || (long)f.Offset + f.After.Length > row.Length || !row.AsSpan(f.Offset, f.After.Length).SequenceEqual(f.After))
             throw new ReplayCheckException($"The bytes after the change are not in the row at offset {f.Offset}.");
         return Replace(row, f.Offset, f.After.Length, f.Before);
     }
