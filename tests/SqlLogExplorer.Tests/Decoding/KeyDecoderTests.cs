@@ -164,6 +164,38 @@ public class KeyDecoderTests
         Assert.Equal("N;", KeyDecoder.FromIndexRecord(Hex("36 0100 01 0100 0800"), kv));
     }
 
+    // ---- Clé variable vide ou NULL en fin de ligne : absente du tableau d'offsets (octets mesurés sur SQL Server 2022) ----
+
+    [Fact]
+    public void TrailingEmptyOrNullVariableKey_RowAndIndexRecordAgree()
+    {
+        // ea(k varchar(10) primary key, v int) : ('', 1). L'index n'a ni zone variable (statut 16) ni octets.
+        var ea = Schema("ea", Col(1, "k", -1, 1, 167, 10, keyOrdinal: 1), Col(2, "v", 4, 2, 56, 4));
+        Assert.Equal("V;", KeyDecoder.FromRow(Hex("1000080001000000020000"), ea));
+        Assert.Equal("V;", KeyDecoder.FromIndexRecord(Hex("16010000"), ea));
+
+        // eb(k, j varchar(10), v int), clé (k, j) : ('a', '') ; j, vide et dernier, manque aux deux.
+        var eb = Schema("eb", Col(1, "k", -1, 1, 167, 10, keyOrdinal: 1), Col(2, "j", -2, 2, 167, 10, keyOrdinal: 2), Col(3, "v", 4, 3, 56, 4));
+        Assert.Equal("V61;V;", KeyDecoder.FromRow(Hex("30000800010000000300000100100061"), eb));
+        Assert.Equal("V61;V;", KeyDecoder.FromIndexRecord(Hex("360200000100090061"), eb));
+
+        // en(i int, s varchar(10) NULL, v int), index clustered non unique (i, s) : (0, NULL).
+        var en = Schema("en", Col(1, "uniqueifier", -1, 1, 56, 4, uniqueifier: true), Col(2, "i", 4, 2, 56, 4, keyOrdinal: 1),
+            Col(3, "s", -2, 3, 167, 10, keyOrdinal: 2), Col(4, "v", 8, 4, 56, 4));
+        Assert.Equal("V00000000;N;U0", KeyDecoder.FromRow(Hex("10000C000000000001000000040004"), en));
+        Assert.Equal("V00000000;N;U0", KeyDecoder.FromIndexRecord(Hex("360000000003000202000E00120000000000"), en));
+    }
+
+    [Fact]
+    public void NonUniqueIndexPartitionedOutsideTheKey_IsNotSupported()
+    {
+        // pt(id int, reg int, v int) partitionnée sur reg, index non unique (id) : l'enregistrement porte reg comme
+        // entrée de clé supplémentaire (3 colonnes) que le schéma ne signale pas. Mesuré sur 2022 ; null attendu.
+        var pt = Schema("pt", Col(1, "uniqueifier", -1, 1, 56, 4, uniqueifier: true), Col(2, "id", 4, 2, 56, 4, keyOrdinal: 1),
+            Col(3, "reg", 8, 3, 56, 4), Col(4, "v", 12, 4, 56, 4));
+        Assert.Null(KeyDecoder.FromIndexRecord(Hex("3601000000050000000300000100140000000000"), pt));
+    }
+
     // ---- Entrées illisibles ----
 
     [Fact]

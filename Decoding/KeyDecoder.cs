@@ -23,9 +23,11 @@ public static class KeyDecoder
         {
             var field = decoded.Fields.FirstOrDefault(f => f.Column == c.Name && f.Role is FieldRole.FixedColumn or FieldRole.VariableColumn);
             var column = decoded.Columns.FirstOrDefault(x => x.Name == c.Name);
-            if (field is null || column is null) return null;   // colonne illisible : Malformed, absente ou hors zone
+            if (column is null || (field is null && c.IsFixed)) return null;   // colonne illisible : Malformed, absente ou hors zone
             // NULL : valeur absente sans réserve ; un type non décodé garde une note mais ses octets restent comparables.
             if (column.Value is null && column.Note is null) AppendNull(sb);
+            // Colonne variable finale, vide ou NULL : absente du tableau d'offsets, donc sans octets.
+            else if (field is null) AppendBytes(sb, ReadOnlySpan<byte>.Empty);
             else if (c.IsBit) AppendBit(sb, column.Value is true);
             else AppendBytes(sb, row.AsSpan(field.Offset, field.Length));
         }
@@ -47,10 +49,11 @@ public static class KeyDecoder
         if (keys.Count == 0) return null;
         var count = keys.Count + (u is null ? 0 : 1);   // C : la liste de clés, uniqueifier compris
 
-        // Statut A : enregistrement d'index (type 3), bitmap de NULL toujours présent, zone variable si une colonne l'est.
+        // Statut A : enregistrement d'index (type 3), bitmap de NULL toujours présent. La zone variable (bit 5) manque quand
+        // aucune colonne variable n'a d'octets, et ses fins s'arrêtent à la dernière colonne non vide : les suivantes sont vides.
         var status = record[0];
         var variableCount = keys.Count(c => !c.IsFixed) + (u is null ? 0 : 1);
-        if ((status >> 1 & 7) != 3 || (status & 0x10) == 0 || ((status & 0x20) != 0) != (variableCount > 0)) return null;
+        if ((status >> 1 & 7) != 3 || (status & 0x10) == 0 || ((status & 0x20) != 0 && variableCount == 0)) return null;
 
         // Partie fixe depuis l'octet 1, dans l'ordre de la clé ; les colonnes bit se partagent un octet par groupe de huit.
         var fixedAt = new Dictionary<SchemaColumn, (int Offset, int Bit)>();
@@ -77,13 +80,15 @@ public static class KeyDecoder
         // Zone variable : nombre, fins d'octets (depuis le début de l'enregistrement), puis les données.
         var ends = new List<int>();
         var dataStart = bitmapEnd;
-        if (variableCount > 0)
+        if ((status & 0x20) != 0)
         {
-            if (bitmapEnd + 2 > record.Length || BinaryPrimitives.ReadUInt16LittleEndian(record.AsSpan(bitmapEnd)) != variableCount) return null;
-            dataStart = bitmapEnd + 2 + 2 * variableCount;
+            if (bitmapEnd + 2 > record.Length) return null;
+            int present = BinaryPrimitives.ReadUInt16LittleEndian(record.AsSpan(bitmapEnd));
+            if (present > variableCount) return null;
+            dataStart = bitmapEnd + 2 + 2 * present;
             if (dataStart > record.Length) return null;
             var previous = dataStart;
-            for (var j = 0; j < variableCount; j++)
+            for (var j = 0; j < present; j++)
             {
                 int end = BinaryPrimitives.ReadUInt16LittleEndian(record.AsSpan(bitmapEnd + 2 + 2 * j));
                 if (end < previous || end > record.Length) return null;
@@ -125,7 +130,7 @@ public static class KeyDecoder
     }
 
     private static ReadOnlySpan<byte> Variable(byte[] record, List<int> ends, int dataStart, int index)
-        => record.AsSpan(index == 0 ? dataStart : ends[index - 1], ends[index] - (index == 0 ? dataStart : ends[index - 1]));
+        => index >= ends.Count ? ReadOnlySpan<byte>.Empty : record.AsSpan(index == 0 ? dataStart : ends[index - 1], ends[index] - (index == 0 ? dataStart : ends[index - 1]));
 
     private static void AppendNull(StringBuilder sb) => sb.Append("N;");
     private static void AppendBit(StringBuilder sb, bool on) => sb.Append(on ? "V01;" : "V00;");

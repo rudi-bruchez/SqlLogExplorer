@@ -27,6 +27,7 @@ Input: the bytes `K` of `RowLog Contents 2` and the `TableSchema` of the allocat
 4. Column count: `u16` equal to `C`.
 5. Null bitmap: `ceil(C / 8)` bytes; bit `i` (least significant first) is the null bit of list entry `i`, so key ordinal `i + 1`, and the uniqueifier's bit is the last one, never set.
 6. If bit 5 of status A is set: variable count `V` (`u16`), `V` end offsets (`u16`, from the start of `K`), then the data: the variable key columns in key order, then the uniqueifier. The uniqueifier is always 4 bytes, `00000000` for the first row of a key, although the data row of that first row has a zero-length uniqueifier or no variable area at all.
+6b. Trailing empty variable keys. The variable area stops at the last variable entry that has bytes, as in a data row: `V` can be smaller than the number of variable entries, and when no variable key has bytes there is no variable area at all and bit 5 of status A is clear (`PRIMARY KEY (k varchar)` with `k = ''`: `16 0100 00`; `(k, j)` with `('a', '')`: `36 0200 00 0100 0900 61`). The missing entries are empty, or `NULL` when their null bit says so. With a uniqueifier the area is complete, since the uniqueifier is last and always has 4 bytes (`(0, NULL)` non-unique on `(int, varchar)`: `36 00000000 0300 02 0200 0E00 1200 00000000`). The matching data rows omit the same entries from their offset array (`10 00 0800 01000000 0200 00` for `k = ''`). Measured on 2022.
 7. A `NULL` key column: a fixed column holds zeros, a variable column has zero length, a `bit` column has its bit clear. Its null bit is the only thing to read.
 8. The bits of a key bit byte that belong to no key column are not reliable: `0x07` and `0xC7` (table `bk`, one bit key column) and `0x39` (table `kb`, two) were observed on 2019 and 2025 where the key bits alone give `0x01`. Mask each bit key column's own bit.
 
@@ -82,7 +83,8 @@ Bytes of 2022; they are identical on the four versions apart from the unused bit
 - More than eight bit key columns: the second byte is presumed to sit at the position of the ninth bit key column, by analogy with data rows; not measured.
 - Key types of spec §1.1 not probed: `numeric`, `money`, `smallmoney`, `real`, `float`, `time`, `datetime`, `smalldatetime`. They are fixed-length and are expected to follow step 3; not measured.
 - A clustered index whose data rows do not store the key columns first (for instance after `ALTER TABLE` on a key column, or a column added then made part of the key): the rule from the key list does not depend on it, but it was not measured.
-- Partitioned tables and keys near the 900 or 1700 byte limits: not measured.
+- Keys near the 900 or 1700 byte limits: not measured.
+- A non-unique clustered index partitioned on a column outside the key: measured, not supported by `KeyDecoder`. The index record carries the partition column as an extra key list entry between the key columns and the uniqueifier, so the column count is 3 where the key list holds 2 (`pt(id, reg, v)` partitioned on `reg`, index on `(id)`, row (1, 5): `36 01000000 05000000 0300 00 0100 1400 00000000`). `TableSchema` does not expose `partition_ordinal`, so the decoder cannot know the column and returns `null` for every modify record of such a table (replay reports "key not decodable"). Reading `sys.index_columns.partition_ordinal` would lift it. Partitioned tables whose partition column is in the key were not seen to differ.
 
 ## `LOP_MODIFY_COLUMNS`
 
