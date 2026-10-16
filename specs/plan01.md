@@ -74,7 +74,7 @@ Projet de test `tests/SqlLogExplorer.Tests/` :
 
 Run :
 ```bash
-cd "SqlLogExplorer"
+cd SqlLogExplorer
 dotnet add SqlLogExplorer.csproj package Microsoft.Data.Sqlite
 dotnet add SqlLogExplorer.csproj package Microsoft.Data.SqlClient
 ```
