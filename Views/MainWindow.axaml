@@ -39,7 +39,45 @@
 
         <TabControl>
             <TabItem Header="Records">
-                <Grid RowDefinitions="*,Auto,6,*">
+              <Grid ColumnDefinitions="640,6,*">
+                <DockPanel Grid.Column="0" Margin="0,0,6,0">
+                    <Grid DockPanel.Dock="Top" ColumnDefinitions="*,120,Auto" Margin="0,0,0,6">
+                        <TextBox Text="{Binding Records.ObjectFilter}" PlaceholderText="Object (table or index name)"
+                                 ToolTip.Tip="Part of the object name; press Enter to search">
+                            <TextBox.KeyBindings>
+                                <KeyBinding Gesture="Enter" Command="{Binding Records.SearchCommand}"/>
+                            </TextBox.KeyBindings>
+                        </TextBox>
+                        <TextBox Grid.Column="1" Text="{Binding Records.PageFilter}" PlaceholderText="Page (1:336)" Margin="6,0,0,0"
+                                 ToolTip.Tip="file:page, in decimal as DBCC PAGE takes it (1:336) or as fn_dblog shows it (0001:00000150)">
+                            <TextBox.KeyBindings>
+                                <KeyBinding Gesture="Enter" Command="{Binding Records.SearchCommand}"/>
+                            </TextBox.KeyBindings>
+                        </TextBox>
+                        <Button Grid.Column="2" Content="Search" Command="{Binding Records.SearchCommand}" Margin="6,0,0,0"/>
+                    </Grid>
+                    <TextBlock DockPanel.Dock="Top" Text="{Binding Records.SearchError}" Foreground="IndianRed" TextWrapping="Wrap"
+                               Margin="0,0,0,6"
+                               IsVisible="{Binding Records.SearchError, Converter={x:Static StringConverters.IsNotNullOrEmpty}}"/>
+                    <Button DockPanel.Dock="Bottom" Content="Show all records" Command="{Binding Records.ShowAllCommand}"
+                            Margin="0,6,0,0" ToolTip.Tip="Clear the transaction selection"/>
+                    <DataGrid ItemsSource="{Binding Records.Transactions}"
+                              SelectedItem="{Binding Records.SelectedTransaction}"
+                              IsReadOnly="True" AutoGenerateColumns="False" SelectionMode="Single">
+                        <DataGrid.Columns>
+                            <DataGridTextColumn Header="Begin" Binding="{Binding BeginTime}" x:DataType="models:TransactionSummary" Width="Auto"/>
+                            <DataGridTextColumn Header="End" Binding="{Binding EndTime}" x:DataType="models:TransactionSummary" Width="Auto"/>
+                            <DataGridTextColumn Header="Outcome" Binding="{Binding Outcome}" x:DataType="models:TransactionSummary" Width="Auto"/>
+                            <DataGridTextColumn Header="Ops" Binding="{Binding OperationCount}" x:DataType="models:TransactionSummary" Width="Auto"/>
+                            <DataGridTextColumn Header="Name" Binding="{Binding Name}" x:DataType="models:TransactionSummary" Width="Auto"/>
+                            <DataGridTextColumn Header="TransactionId" Binding="{Binding TransactionId}" x:DataType="models:TransactionSummary" Width="Auto"/>
+                        </DataGrid.Columns>
+                    </DataGrid>
+                </DockPanel>
+
+                <GridSplitter Grid.Column="1" ResizeDirection="Columns"/>
+
+                <Grid Grid.Column="2" RowDefinitions="*,Auto,6,*">
                     <DataGrid Grid.Row="0" ItemsSource="{Binding Records.Records}"
                               SelectedItem="{Binding Records.SelectedRecord}"
                               IsReadOnly="True" AutoGenerateColumns="False" SelectionMode="Single">
@@ -56,6 +94,7 @@
                         <Button Content="Previous" Command="{Binding Records.PreviousPageCommand}"/>
                         <TextBlock Text="{Binding Records.PageNumber, StringFormat='Page {0}'}" VerticalAlignment="Center"/>
                         <Button Content="Next" Command="{Binding Records.NextPageCommand}"/>
+                        <TextBlock Text="{Binding Records.FilterDescription}" VerticalAlignment="Center" FontStyle="Italic" Margin="12,0,0,0"/>
                     </StackPanel>
 
                     <GridSplitter Grid.Row="2" ResizeDirection="Rows"/>
@@ -121,6 +160,7 @@
                     </DockPanel>
                     </Panel>
                 </Grid>
+              </Grid>
             </TabItem>
             <TabItem Header="By operation type">
                 <DataGrid ItemsSource="{Binding Statistics.ByOperation}" IsReadOnly="True"

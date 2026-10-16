@@ -4,6 +4,12 @@ All notable changes to this project are documented in this file. The format foll
 
 ## [Unreleased]
 
+### Added
+
+- A transaction list on the left of the `Records` tab, with each transaction's begin and end time, outcome (`Committed`, `Rolled back` or `Open`), number of records and name. Selecting a transaction shows only its records in the grid; `Show all records` clears it.
+- A search by object and by page above the list. `Object` matches part of the `AllocUnitName`; `Page` takes `file:page` in decimal (`1:336`, as `DBCC PAGE` takes it) or in the `fn_dblog` form (`0001:00000150`). Both the transaction list and the grid follow the search.
+- The import now reads the `Begin Time` and `End Time` columns of `fn_dblog` and `fn_dump_dblog`.
+
 ## [0.1.1] - 2026-10-16
 
 Fixes the connection dialog, whose buttons could not be reached.

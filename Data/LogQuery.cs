@@ -29,8 +29,8 @@ public sealed class LogQuery
     private const string SelectRecords =
         "SELECT LSN, Operation, Context, TransactionId, AllocUnitName, RowLogContents0, RowLogContents1, " +
         "AllocUnitId, PartitionId, PageId, SlotId, OffsetInRow, ModifySize, NumElements, " +
-        "Description, TransactionName, RowLogContents2, RowLogContents3, RowLogContents4, RowLogContents5, LogRecordBytes " +
-        "FROM LogRecords";
+        "Description, TransactionName, RowLogContents2, RowLogContents3, RowLogContents4, RowLogContents5, LogRecordBytes, " +
+        "BeginTime, EndTime FROM LogRecords";
 
     // Enregistrements de données (spec03 §5) : le journal porte aussi des LCX_PFS et des LCX_INDEX_* qui citent l'AllocUnitId de la table.
     private const string DataRecords =
@@ -100,6 +100,33 @@ public sealed class LogQuery
         return list;
     }
 
+    /// <summary>Les transactions du cache dans l'ordre de leur premier LSN, sans la pseudo-transaction 0000:00000000 des
+    /// enregistrements hors transaction (checkpoints). Avec <paramref name="touching"/>, seulement celles dont un
+    /// enregistrement y répond (un objet, une page), comptées en entier.</summary>
+    public async Task<IReadOnlyList<TransactionSummary>> GetTransactionsAsync(LogFilter? touching = null, CancellationToken ct = default)
+    {
+        using var gate = await ConnectionGate.EnterAsync(_connection, ct);
+        await using var cmd = _connection.CreateCommand();
+        var where = AppendFilter(cmd, touching);
+        var touches = where.Length == 0 ? string.Empty : $" AND TransactionId IN (SELECT TransactionId FROM LogRecords{where})";
+        cmd.CommandText =
+            "SELECT TransactionId, MAX(CASE WHEN Operation = 'LOP_BEGIN_XACT' THEN TransactionName END), " +
+            "MAX(BeginTime), MAX(EndTime), " +
+            "MAX(Operation = 'LOP_COMMIT_XACT'), MAX(Operation = 'LOP_ABORT_XACT'), COUNT(*) " +
+            "FROM LogRecords WHERE TransactionId IS NOT NULL AND TransactionId <> '0000:00000000'" + touches +
+            " GROUP BY TransactionId ORDER BY MIN(LSN);";
+
+        var list = new List<TransactionSummary>();
+        await using var r = await cmd.ExecuteReaderAsync(ct);
+        while (await r.ReadAsync(ct))
+        {
+            var outcome = r.GetBoolean(4) ? "Committed" : r.GetBoolean(5) ? "Rolled back" : "Open";
+            list.Add(new TransactionSummary(r.GetString(0), r.IsDBNull(1) ? null : r.GetString(1),
+                r.IsDBNull(2) ? null : r.GetString(2), r.IsDBNull(3) ? null : r.GetString(3), outcome, r.GetInt64(6)));
+        }
+        return list;
+    }
+
     /// <summary>Le plus grand LSN du cache, d'où l'ancre 3 reprend la lecture du journal (spec03 §7.2) ; null pour un cache vide.</summary>
     public async Task<string?> GetLastLsnAsync(CancellationToken ct = default)
     {
@@ -132,7 +159,7 @@ public sealed class LogQuery
             OffsetInRow = Int(r, 11), ModifySize = Int(r, 12), NumElements = Int(r, 13),
             Description = Text(r, 14), TransactionName = Text(r, 15),
             RowLogContents2 = Bytes(r, 16), RowLogContents3 = Bytes(r, 17), RowLogContents4 = Bytes(r, 18), RowLogContents5 = Bytes(r, 19),
-            LogRecordBytes = Bytes(r, 20),
+            LogRecordBytes = Bytes(r, 20), BeginTime = Text(r, 21), EndTime = Text(r, 22),
         };
     }
 
@@ -203,6 +230,11 @@ public sealed class LogQuery
         {
             clauses.Add("Operation = $f_op");
             cmd.Parameters.AddWithValue("$f_op", filter.Operation);
+        }
+        if (!string.IsNullOrEmpty(filter.PageId))
+        {
+            clauses.Add("PageId = $f_page");
+            cmd.Parameters.AddWithValue("$f_page", filter.PageId);
         }
         if (!string.IsNullOrEmpty(filter.TransactionId))
         {

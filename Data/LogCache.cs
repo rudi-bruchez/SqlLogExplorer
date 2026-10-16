@@ -61,6 +61,8 @@ public sealed class LogCache : IAsyncDisposable, IDisposable
                 RowLogContents4 BLOB,
                 RowLogContents5 BLOB,
                 LogRecordBytes  BLOB,
+                BeginTime       TEXT,
+                EndTime         TEXT,
                 RowKey          TEXT
             );
             CREATE INDEX IF NOT EXISTS IX_LogRecords_AllocUnitName ON LogRecords(AllocUnitName);
@@ -88,11 +90,13 @@ public sealed class LogCache : IAsyncDisposable, IDisposable
             INSERT OR IGNORE INTO LogRecords
                 (LSN, Operation, Context, TransactionId, AllocUnitName, RowLogContents0, RowLogContents1,
                  AllocUnitId, PartitionId, PageId, SlotId, OffsetInRow, ModifySize, NumElements,
-                 Description, TransactionName, RowLogContents2, RowLogContents3, RowLogContents4, RowLogContents5, LogRecordBytes)
+                 Description, TransactionName, RowLogContents2, RowLogContents3, RowLogContents4, RowLogContents5, LogRecordBytes,
+                 BeginTime, EndTime)
             VALUES
                 ($lsn, $op, $ctx, $txid, $alloc, $rlc0, $rlc1,
                  $auid, $pid, $page, $slot, $off, $msize, $nel,
-                 $desc, $txname, $rlc2, $rlc3, $rlc4, $rlc5, $lrb);
+                 $desc, $txname, $rlc2, $rlc3, $rlc4, $rlc5, $lrb,
+                 $begin, $end);
             """;
 
         var pLsn    = AddParam(cmd, "$lsn");
@@ -116,6 +120,8 @@ public sealed class LogCache : IAsyncDisposable, IDisposable
         var pRlc4   = AddParam(cmd, "$rlc4");
         var pRlc5   = AddParam(cmd, "$rlc5");
         var pLrb    = AddParam(cmd, "$lrb");
+        var pBegin  = AddParam(cmd, "$begin");
+        var pEnd    = AddParam(cmd, "$end");
 
         long inserted = 0;
         cmd.Prepare();
@@ -143,6 +149,8 @@ public sealed class LogCache : IAsyncDisposable, IDisposable
             pRlc4.Value   = (object?)r.RowLogContents4 ?? DBNull.Value;
             pRlc5.Value   = (object?)r.RowLogContents5 ?? DBNull.Value;
             pLrb.Value    = (object?)r.LogRecordBytes ?? DBNull.Value;
+            pBegin.Value  = (object?)r.BeginTime ?? DBNull.Value;
+            pEnd.Value    = (object?)r.EndTime ?? DBNull.Value;
             inserted += cmd.ExecuteNonQuery(); // 0 pour une ligne ignorée.
         }
 

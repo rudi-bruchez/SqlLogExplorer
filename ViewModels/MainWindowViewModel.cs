@@ -134,7 +134,7 @@ public partial class MainWindowViewModel : ViewModelBase, IAsyncDisposable
         if (Records is not null) Records.PropertyChanged -= OnRecordsChanged;
         Records = new RecordsViewModel(new LogQuery(cache.Connection));
         Records.PropertyChanged += OnRecordsChanged;
-        await Records.LoadAsync();
+        await Records.RefreshAsync();
     }
 
     private void OnRecordsChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)

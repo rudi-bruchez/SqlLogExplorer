@@ -12,7 +12,7 @@ Version 0.1.0 is a preview. The log format is undocumented: every layout the dec
 
 ## Documentation
 
-- [User guide](docs/user-guide.md): the connection dialog, live and offline imports, the schema source, the Records and statistics tabs, the inspector.
+- [User guide](docs/user-guide.md): the connection dialog, live and offline imports, the schema source, the Records tab with its transactions and searches, the statistics tabs, the inspector.
 - [Decoding and reconstruction](docs/decoding.md): what is decoded, how an update is rebuilt, and what every refusal message means.
 - [Changelog](CHANGELOG.md).
 
@@ -58,7 +58,8 @@ Live analysis of a database:
 2. Enter the server, choose the authentication and the encryption, then click `Connect` to list the databases.
 3. Choose the database. Optionally set a start and an end in `Time Window (Optional):` to import only part of the log.
 4. Click `OK`. The records are imported and shown in the `Records` tab.
-5. Select an `LOP_INSERT_ROWS`, `LOP_DELETE_ROWS`, `LOP_MODIFY_ROW` or `LOP_MODIFY_COLUMNS` record. The inspector below the grid shows the decoded columns in `Values` and the annotated bytes in `Bytes`.
+5. To follow one transaction, select it in the list on the left; to see what happened to a table or a page, type its name or `file:page` in the boxes above the list.
+6. Select an `LOP_INSERT_ROWS`, `LOP_DELETE_ROWS`, `LOP_MODIFY_ROW` or `LOP_MODIFY_COLUMNS` record. The inspector below the grid shows the decoded columns in `Values` and the annotated bytes in `Bytes`.
 
 Offline analysis of log backups (Windows):
 
@@ -80,7 +81,7 @@ Every layout the decoder relies on was measured on SQL Server 2017, 2019, 2022 a
 - Not decoded: compressed rows (`ROW` or `PAGE`), sparse columns, values stored off-row (LOB and row-overflow), memory-optimized tables (In-Memory OLTP), and some data types. The details are in [Decoding and reconstruction](docs/decoding.md).
 - A reconstruction that cannot be proven is refused: rollbacks to a savepoint, Accelerated Database Recovery (ADR) reverts, a key reused after a delete, a heap row moved to another page, and a few other cases, each with its own message.
 - Rebuilding from the current row works in live mode only, on a clustered table, in a database without ADR. It runs a `SERIALIZABLE` transaction on the analyzed database for the time of the read (a few hundred milliseconds in testing), and waits at most 5 seconds for a row lock.
-- The Records tab pages through the records in LSN order. It has no filter or search.
+- The Records tab pages through the records in LSN order. It can be restricted to one transaction, an object or a page, and has no other filter.
 
 ## Build from source
 

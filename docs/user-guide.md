@@ -94,11 +94,35 @@ The selected record is inspected again with the new schema. A record whose alloc
 
 ## Records tab
 
-The `Records` tab lists the cached records in LSN order, 200 per page, with the columns `LSN`, `Operation`, `Context`, `AllocUnitName` and `TransactionId`. `Previous` and `Next` move between pages; `Page <n>` shows the current one. The grid has no filter, sort or search.
+The `Records` tab lists the cached records in LSN order, 200 per page, with the columns `LSN`, `Operation`, `Context`, `AllocUnitName` and `TransactionId`. `Previous` and `Next` move between pages; `Page <n>` shows the current one. The text next to them says what the grid shows: `All records`, the records of a search, or one transaction. The grid has no sort.
 
 LSNs are shown in the `fn_dblog` form `vlf:block:slot`, in uppercase hexadecimal (SQL Server 2017 and 2019 return lowercase; the application normalizes them).
 
 Selecting a record fills the inspector, below the grid. A splitter between the two can be dragged.
+
+### Transactions
+
+The panel on the left of the tab lists the transactions of the cache in LSN order, with the columns `Begin`, `End`, `Outcome`, `Ops`, `Name` and `TransactionId`:
+
+- `Begin` is the `Begin Time` of the `LOP_BEGIN_XACT` record and `End` the `End Time` of the `LOP_COMMIT_XACT` or `LOP_ABORT_XACT` record, as SQL Server returns them, in the local time of the server.
+- `Outcome` is `Committed`, `Rolled back`, or `Open` when the imported log holds neither a commit nor an abort for the transaction (it was still running, or it ends after the imported part of the log).
+- `Ops` counts the imported records of the transaction, its begin and commit included.
+- `Name` is the transaction name SQL Server records: `user_transaction` for an explicit `BEGIN TRAN`, otherwise the statement, such as `INSERT` or `UPDATE`.
+
+A transaction that began before the imported part of the log has no `Begin` and no `Name`. The records outside any transaction (`TransactionId` `0000:00000000`, such as checkpoints) are not listed.
+
+Selecting a transaction shows only its records in the grid, from the first page. `Show all records` clears the selection.
+
+### Searching by object or page
+
+The two boxes above the transaction list restrict the list and the grid. Type a value and press `Enter` or click `Search`; empty both boxes and search again to see everything.
+
+- `Object` keeps the records whose `AllocUnitName` contains the text, such as `Orders` or `dbo.Orders.PK_Orders`. An offline import has no `AllocUnitName` (see above), so this search finds nothing there.
+- `Page` keeps the records whose `Page ID` is that page, written `file:page` either in decimal, as `DBCC PAGE` and `sys.dm_db_page_info` take it (`1:336`), or as `fn_dblog` shows it (`0001:00000150`). A value read neither way is reported in red, and the list and grid stay as they were.
+
+With both boxes filled, a record must match both. The transaction list then shows every transaction that has at least one matching record, and its `Ops` still counts all its records. Selecting one of them shows all its operations, not only those on the object or page, so that its begin and commit stay in view.
+
+A page search follows the `Page ID` column only. Records that concern a page without naming it there, such as the allocation bitmaps (PFS, GAM, IAM) updated when the page is allocated, do not appear.
 
 ## Statistics tabs
 

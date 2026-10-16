@@ -19,6 +19,11 @@ public sealed record LogRecord(
     public int? NumElements { get; init; }
     public string? Description { get; init; }
     public string? TransactionName { get; init; }
+
+    /// <summary>[Begin Time] de LOP_BEGIN_XACT, [End Time] de LOP_COMMIT_XACT et LOP_ABORT_XACT : texte tel que fn_dblog
+    /// le renvoie (yyyy/MM/dd HH:mm:ss:fff, heure locale du serveur), nul sur les autres enregistrements.</summary>
+    public string? BeginTime { get; init; }
+    public string? EndTime { get; init; }
     public byte[]? RowLogContents2 { get; init; }
     public byte[]? RowLogContents3 { get; init; }
     public byte[]? RowLogContents4 { get; init; }
