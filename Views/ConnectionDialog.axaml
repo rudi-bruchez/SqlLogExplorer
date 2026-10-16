@@ -10,14 +10,25 @@
         Title="Connect to Server"
         Width="450" Height="650"
         WindowStartupLocation="CenterOwner"
-        CanResize="False">
+        MinWidth="400" MinHeight="420">
 
     <Design.DataContext>
         <vm:ConnectionDialogViewModel />
     </Design.DataContext>
 
+    <!-- Statut et boutons hors de la zone défilante : le contenu dépasse la hauteur de la fenêtre (authentification SQL, fenêtre de temps),
+         et des boutons placés à la fin du StackPanel sortaient de l'écran. -->
+    <DockPanel>
+        <StackPanel DockPanel.Dock="Bottom" Margin="16,8,16,16" Spacing="8">
+            <TextBlock Text="{Binding StatusMessage}" TextWrapping="Wrap" MinHeight="20" />
+            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8">
+                <Button Content="OK" Click="OnOkClick" IsDefault="True" Width="80" HorizontalContentAlignment="Center"/>
+                <Button Content="Cancel" Click="OnCancelClick" IsCancel="True" Width="80" HorizontalContentAlignment="Center"/>
+            </StackPanel>
+        </StackPanel>
     <TabControl>
         <TabItem Header="Connection">
+            <ScrollViewer>
             <StackPanel Margin="16" Spacing="12">
                 <!-- Connection Settings -->
                 <TextBlock Text="Server:" FontWeight="Bold"/>
@@ -60,25 +71,15 @@
                     <TimePicker Grid.Row="1" Grid.Column="2" SelectedTime="{Binding EndTimeOfDay}" />
                 </Grid>
 
-                <!-- Status -->
-                <TextBlock Text="{Binding StatusMessage}" TextWrapping="Wrap" MinHeight="40" Margin="0,8,0,0" />
-
-                <!-- Dialog Buttons -->
-                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8" Margin="0,16,0,0">
-                    <Button Content="OK" Click="OnOkClick" IsDefault="True" Width="80" HorizontalContentAlignment="Center"/>
-                    <Button Content="Cancel" Click="OnCancelClick" IsCancel="True" Width="80" HorizontalContentAlignment="Center"/>
-                </StackPanel>
             </StackPanel>
+            </ScrollViewer>
         </TabItem>
         <TabItem Header="History">
             <StackPanel Margin="16" Spacing="12">
                 <TextBlock Text="Recent servers:" FontWeight="Bold"/>
                 <ListBox ItemsSource="{Binding RecentServers}" MinHeight="200"/>
-                <!-- Dialog Buttons for History tab (Optional) -->
-                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8" Margin="0,16,0,0">
-                    <Button Content="Cancel" Click="OnCancelClick" IsCancel="True" Width="80" HorizontalContentAlignment="Center"/>
-                </StackPanel>
             </StackPanel>
         </TabItem>
     </TabControl>
+    </DockPanel>
 </Window>
