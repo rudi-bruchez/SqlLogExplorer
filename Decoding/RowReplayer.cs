@@ -87,11 +87,11 @@ public static class RowReplayer
     }
 
     /// <summary>La vie de la clé qui contient l'enregistrement lsn de chain (spec03 §7.4) : un delete la termine, l'enregistrement suivant en
-    /// ouvre une autre. Le delete d'une transaction annulée ne sépare rien, son effet net est nul. Vide si lsn n'est pas dans chain.</summary>
+    /// ouvre une autre. Seul le delete d'une transaction validée ou d'issue inconnue sépare : celui d'une transaction annulée a un effet net nul, et celui d'une transaction partiellement annulée a pu être défait par un point de sauvegarde, ce que l'ADR ne journalise pas (§2), donc il reste dans la vie et le rejeu refuse au lieu de montrer une mauvaise ligne. Vide si lsn n'est pas dans chain.</summary>
     public static IReadOnlyList<LogRecord> Life(IReadOnlyList<LogRecord> chain, string lsn, IReadOnlyDictionary<string, TxOutcome> outcomes)
     {
         bool Ends(LogRecord r) => r.Operation == Delete
-            && !(r.TransactionId is not null && outcomes.TryGetValue(r.TransactionId, out var o) && o == TxOutcome.RolledBack);
+            && (r.TransactionId is null || !outcomes.TryGetValue(r.TransactionId, out var o) || o is TxOutcome.Committed or TxOutcome.Unknown);
         var i = chain.ToList().FindIndex(r => r.Lsn == lsn);
         if (i < 0) return [];
         var start = i;

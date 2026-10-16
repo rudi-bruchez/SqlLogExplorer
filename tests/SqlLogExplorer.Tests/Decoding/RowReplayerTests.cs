@@ -269,6 +269,28 @@ public class RowReplayerTests(ITestOutputHelper output)
         Assert.Equal(AbcdefRow, f.After);
     }
 
+    // Un delete d'une transaction partiellement annulée a pu être défait par la reprise d'un point de sauvegarde, sans compensation sous ADR : il ne termine pas la vie.
+    [Fact]
+    public void ADeleteOfAPartlyRolledBackTransaction_DoesNotEndTheLifeAndTheRevertStopsTheReplay()
+    {
+        var outcomes = With(("P", TxOutcome.PartlyRolledBack));
+        var chain = new[] { Insert(1, "A", SpecRow), SetA(2, "P"), Delete(3, "P", WithA(SpecRow, 0x0B)), GrowB(4, "C"), SetA(5, "B", 0x0B, 0x0C), Delete(6, "D", WithA(AbcdefRow, 0x0C)) };
+
+        var r = Replay(chain, 5, outcomes, new HashSet<string> { Tx("P") });
+
+        Assert.Null(r.After);
+        Assert.Equal("ADR revert in the chain, not replayed", r.Status);
+    }
+
+    [Fact]
+    public void Life_ADeleteOfAPartlyRolledBackTransaction_DoesNotSplit()
+    {
+        var chain = new[] { Insert(1, "A", SpecRow), SetA(2, "P"), Delete(3, "P", WithA(SpecRow, 0x0B)), GrowB(4, "C") };
+
+        Assert.Equal(4, RowReplayer.Life(chain, L(4), With(("P", TxOutcome.PartlyRolledBack))).Count);
+        Assert.Single(RowReplayer.Life(chain, L(4), With(("P", TxOutcome.Committed))));
+    }
+
     [Fact]
     public void AdrRevertBeforeTheSelectedRecord_StopsTheReplayToo()
     {
