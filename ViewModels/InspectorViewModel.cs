@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Globalization;
+using System.Threading;
 using System.Linq;
 using System.Threading.Tasks;
 using CommunityToolkit.Mvvm.ComponentModel;
@@ -25,6 +26,7 @@ public sealed partial class InspectorViewModel : ViewModelBase
     private bool? _readerAvailable;   // l'ADR de la base ne change pas pendant la session
     private LogRecord? _record;
     private int _generation;          // une sélection plus récente l'emporte sur une inspection encore en cours
+    private readonly SemaphoreSlim _gate = new(1, 1);   // une inspection à la fois : SchemaProvider n'est pas concurrent, et chaque inspection concurrente poserait la clé de la table
 
     public InspectorViewModel(DecodingService service, CurrentRowReader? reader)
     {
@@ -53,8 +55,12 @@ public sealed partial class InspectorViewModel : ViewModelBase
         if (record is null) return;
         Title = $"{record.Operation} at {record.Lsn}";
         FillBytes(record, null);
+        var entered = false;
         try
         {
+            await _gate.WaitAsync();
+            entered = true;
+            if (generation != _generation) return;   // une sélection plus récente a pris la place : le service n'est pas appelé
             // Hors du thread UI : les appels de SQLite se terminent de façon synchrone, et la première sélection d'une grande table
             // pose la clé de toutes ses lignes (7,8 s pour 300 000). Le retour se fait sur le thread appelant.
             var inspection = await Task.Run(() => _service.InspectAsync(record));
@@ -64,6 +70,10 @@ public sealed partial class InspectorViewModel : ViewModelBase
         catch (Exception ex)
         {
             if (generation == _generation) Error = $"Decoding failed: {ex.Message}";
+        }
+        finally
+        {
+            if (entered) _gate.Release();
         }
     }
 
@@ -76,8 +86,12 @@ public sealed partial class InspectorViewModel : ViewModelBase
         CanRebuildFromCurrentRow = false;
         Error = null;
         ReplayStatus = "reading the current row…";
+        var entered = false;
         try
         {
+            await _gate.WaitAsync();
+            entered = true;
+            if (generation != _generation) return;
             var inspection = await Task.Run(() => _service.RebuildFromCurrentRowAsync(record, _reader));
             if (generation == _generation) Show(inspection, false);
         }
@@ -88,6 +102,10 @@ public sealed partial class InspectorViewModel : ViewModelBase
                 ReplayStatus = null;
                 Error = $"Rebuild from the current row failed: {ex.Message}";
             }
+        }
+        finally
+        {
+            if (entered) _gate.Release();
         }
     }
 

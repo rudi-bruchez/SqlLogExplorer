@@ -207,14 +207,55 @@ public class InspectorViewModelTests
         var slow = vm.InspectAsync(FirstModify(f));
         // L'inspection tourne hors du thread appelant : sans cette attente, celle de l'insert pouvait faire la première recherche,
         // attendre la barrière qui ne s'ouvre qu'après elle, et bloquer le test (blocages mesurés pendant la revue de mutation).
-        await started.Task;
-        await vm.InspectAsync(insert);
+        await started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        // Les inspections sont sérialisées : celle de l'insert attend la fin de la première, elle ne peut pas être attendue avant la barrière.
+        var newer = vm.InspectAsync(insert);
         gate.SetResult();
-        await slow;
+        await slow.WaitAsync(TimeSpan.FromSeconds(5));
+        await newer.WaitAsync(TimeSpan.FromSeconds(5));
 
         Assert.Equal($"LOP_INSERT_ROWS at {insert.Lsn}, transaction committed", vm.Title);
         Assert.Null(vm.ReplayStatus);
         Assert.Contains(vm.Bytes, b => b.Role is not null);
+    }
+
+    [Fact]
+    public async Task QuickSuccessiveSelections_RunTheServiceOneAtATime_AndSkipTheSupersededOnes()
+    {
+        var f = FixtureSet.Load("2022", "modify");
+        await using var cache = await CacheAsync(f);
+        var gate = new TaskCompletionSource();
+        var started = new TaskCompletionSource();
+        int calls = 0, running = 0, maxRunning = 0;
+        Func<long, CancellationToken, Task<TableSchema?>> lookup = async (au, _) =>
+        {
+            var now = Interlocked.Increment(ref running);
+            int seen;
+            while (now > (seen = Volatile.Read(ref maxRunning)) && Interlocked.CompareExchange(ref maxRunning, now, seen) != seen) { }
+            try
+            {
+                if (Interlocked.Increment(ref calls) == 1) { started.SetResult(); await gate.Task; }   // seule la première recherche attend
+                else await Task.Delay(20);   // laisse à une exécution concurrente le temps de se montrer
+                return f.Schemas.TryGetValue(au, out var s) ? s : null;
+            }
+            finally { Interlocked.Decrement(ref running); }
+        };
+        var vm = new InspectorViewModel(new DecodingService(cache, lookup, isLive: false), null);
+        var records = f.ForTable("dbo.t").Records;
+        var first = FirstModify(f);
+        var middle = records.First(r => r.Operation == "LOP_INSERT_ROWS");
+        var last = records.First(r => r.Operation == "LOP_DELETE_ROWS");
+
+        var t1 = vm.InspectAsync(first);
+        await started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var t2 = vm.InspectAsync(middle);
+        var t3 = vm.InspectAsync(last);
+        gate.SetResult();
+        await Task.WhenAll(t1, t2, t3).WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Equal(1, maxRunning);
+        Assert.Equal(2, calls);   // la première et la dernière : la sélection du milieu n'atteint jamais le service
+        Assert.StartsWith($"LOP_DELETE_ROWS at {last.Lsn}", vm.Title);
     }
 
     [Fact]
