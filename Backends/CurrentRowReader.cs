@@ -137,8 +137,7 @@ public sealed partial class CurrentRowReader
         foreach (var (slot, _, lines) in dumps)
         {
             var row = ParseSlotDump(lines, slot);
-            if (row is null || row.Length == 0 || (row[0] >> 1 & 7) != 0) continue;
-            if (KeyMatches(row, schema, key)) return new CurrentRowResult(row, null);
+            if (row is not null && KeyMatches(row, schema, key)) return new CurrentRowResult(row, null);
         }
         return new CurrentRowResult(null, NotThisRow);
     }
@@ -228,10 +227,13 @@ public sealed partial class CurrentRowReader
         return (int.Parse(parts[0], CultureInfo.InvariantCulture), int.Parse(parts[1], CultureInfo.InvariantCulture), int.Parse(parts[2], CultureInfo.InvariantCulture));
     }
 
-    /// <summary>Chaque colonne de clé de la ligne lue vaut celle de l'enregistrement choisi, uniqueifier compris (0 pour la première ligne d'une clé).
-    /// Les valeurs sont comparées sans collation : deux chaînes que la collation confond restent distinctes, comme leurs octets.</summary>
+    /// <summary>La ligne lue est un enregistrement primaire (type 0) dont chaque colonne de clé vaut celle de l'enregistrement choisi,
+    /// uniqueifier compris (0 pour la première ligne d'une clé). Les valeurs sont comparées sans collation : deux chaînes que la collation
+    /// confond restent distinctes, comme leurs octets.</summary>
     internal static bool KeyMatches(byte[] row, TableSchema schema, IReadOnlyList<(SchemaColumn Column, object? Value)> key)
     {
+        // Un autre type d'enregistrement n'a pas de colonnes décodées : une clé NULL lui irait.
+        if (row.Length == 0 || (row[0] >> 1 & 7) != 0) return false;
         var decoded = RowDecoder.Decode(row, schema);
         if (decoded.HasProblem) return false;   // un slot mal lu n'a pas de colonnes : une clé NULL lui irait
         foreach (var (column, value) in key)

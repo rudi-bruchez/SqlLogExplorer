@@ -18,6 +18,22 @@ public class CurrentRowParsingTests
         Assert.False(CurrentRowReader.KeyMatches(Convert.FromHexString("10000C0001"), s, [(k, null)]));                        // ligne tronquée
     }
 
+    [Fact]
+    public void KeyMatches_RejectsARecordThatIsNotPrimary_EvenForANullKey()
+    {
+        var s = new TableSchema(1, "dbo", "n", 1, 1, new[] { Col(1, "k", 4, 1, 56, 4, keyOrdinal: 1), Col(2, "v", 8, 2, 56, 4) });
+
+        // Talon de renvoi (type 2) : décodé sans colonne ni problème, la colonne k y est absente comme une valeur NULL.
+        Assert.False(CurrentRowReader.KeyMatches(Convert.FromHexString("040001000000010000"), s, [(s.Columns[0], null)]));
+    }
+
+    [Fact]
+    public void Sendable_InAnUnknownDatabaseCodePage_IsFalse_NotAnException()
+    {
+        Assert.False(CurrentRowReader.Sendable("abc", 1252, 12345));
+        Assert.True(CurrentRowReader.Sendable("abc", 1252, 1252));
+    }
+
     [Theory, MemberData(nameof(Versions))]
     public void ParseSlotDump_RebuildsTheRowOfDboU(string version)
     {
