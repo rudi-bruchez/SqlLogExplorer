@@ -4,6 +4,14 @@ All notable changes to this project are documented in this file. The format foll
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-10-16
+
+Fixes the connection dialog, whose buttons could not be reached.
+
+### Fixed
+
+- The `OK` and `Cancel` buttons of the connection dialog were cut off at the bottom of the window when SQL authentication or the time window made the form taller than the window, so a database could be selected and never confirmed. They now stay in a bar at the bottom, the fields scroll above it, and the window can be resized.
+
 ## [0.1.0] - 2026-10-16
 
 First release. SqlLogExplorer reads the transaction log of a SQL Server database through `sys.fn_dblog`, or of log backups through `sys.fn_dump_dblog`, keeps the records in a local SQLite cache, and decodes the binary `RowLog Contents` of row operations into typed column values, before and after each change. It is a preview: the log format is undocumented, and every layout the decoder relies on was measured on SQL Server 2017, 2019, 2022 and 2025.
@@ -26,5 +34,6 @@ First release. SqlLogExplorer reads the transaction log of a SQL Server database
 - Importing with `fn_dblog` and reading the current row with `DBCC PAGE` require `sysadmin`. Reading the current row also requires a clustered table without ADR, and it holds a SERIALIZABLE transaction on the analyzed database for a few hundred milliseconds.
 - Raw `.ldf` files are not read.
 
-[Unreleased]: https://github.com/rudi-bruchez/SqlLogExplorer/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/rudi-bruchez/SqlLogExplorer/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/rudi-bruchez/SqlLogExplorer/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/rudi-bruchez/SqlLogExplorer/releases/tag/v0.1.0
