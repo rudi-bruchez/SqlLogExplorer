@@ -1,3 +1,4 @@
+using SqlLogExplorer.Backends;
 using SqlLogExplorer.Data;
 using SqlLogExplorer.Decoding;
 using SqlLogExplorer.Models;
@@ -193,16 +194,20 @@ public class InspectorViewModelTests
         var f = FixtureSet.Load("2022", "modify");
         await using var cache = await CacheAsync(f);
         var gate = new TaskCompletionSource();
+        var started = new TaskCompletionSource();
         var calls = 0;
         Func<long, CancellationToken, Task<TableSchema?>> lookup = async (au, _) =>
         {
-            if (Interlocked.Increment(ref calls) == 1) await gate.Task;   // seule la première recherche attend
+            if (Interlocked.Increment(ref calls) == 1) { started.SetResult(); await gate.Task; }   // seule la première recherche attend
             return f.Schemas.TryGetValue(au, out var s) ? s : null;
         };
         var vm = new InspectorViewModel(new DecodingService(cache, lookup, isLive: false), null);
         var insert = f.ForTable("dbo.t").Records.First(r => r.Operation == "LOP_INSERT_ROWS");
 
         var slow = vm.InspectAsync(FirstModify(f));
+        // L'inspection tourne hors du thread appelant : sans cette attente, celle de l'insert pouvait faire la première recherche,
+        // attendre la barrière qui ne s'ouvre qu'après elle, et bloquer le test (blocages mesurés pendant la revue de mutation).
+        await started.Task;
         await vm.InspectAsync(insert);
         gate.SetResult();
         await slow;
@@ -266,6 +271,60 @@ public class InspectorViewModelTests
         Assert.Null(vm.Inspector!.SchemaMessage);
         Assert.StartsWith("rebuilt", vm.Inspector.ReplayStatus);
         Assert.True(vm.CanConnectSchemaSource);
+    }
+
+    // ---- Lignes de propagation de l'inspecteur (revue de mutation) ----
+
+    [Fact]
+    public async Task AChainThroughATransactionOfUnknownOutcome_IsNoted()
+    {
+        var f = FixtureSet.Load("2022", "modify");
+        var modify = FirstModify(f);
+        var cache = await LogCache.CreateAsync(Path.Combine(Path.GetTempPath(), $"sqllogexp_{Guid.NewGuid():N}.db"));
+        await using var _ = cache;
+        await cache.InsertBatchAsync(f.Log.Where(r => !(r.TransactionId == modify.TransactionId && r.Operation == "LOP_COMMIT_XACT")).ToList());
+        var vm = new InspectorViewModel(new DecodingService(cache, Lookup(f), isLive: false), null);
+
+        await vm.InspectAsync(modify);
+
+        Assert.StartsWith("rebuilt", vm.ReplayStatus);
+        Assert.Equal("includes changes of unknown outcome", vm.Notes);
+    }
+
+    // Un serveur qui refuse la connexion : le lecteur existe, mais rien ne peut y être lu.
+    private static CurrentRowReader UnreachableReader() => new("Server=127.0.0.1,1;Connect Timeout=1;Encrypt=False;Database=db");
+
+    [Fact]
+    public async Task AReaderThatCannotTellItsDatabase_DoesNotOfferTheRebuild()
+    {
+        var f = FixtureSet.Load("2022", "schema_change");
+        await using var cache = await CacheAsync(f);
+        var service = new DecodingService(cache, Lookup(f), isLive: true);
+        var update = f.ForTable("dbo.rb").Records.Single(r => r.Operation is "LOP_MODIFY_ROW" or "LOP_MODIFY_COLUMNS" && !r.IsCompensation);
+        Assert.True((await service.InspectAsync(update)).CanRebuildFromCurrentRow);
+        var vm = new InspectorViewModel(service, UnreachableReader());
+
+        await vm.InspectAsync(update);
+
+        Assert.False(vm.CanRebuildFromCurrentRow);
+        Assert.Null(vm.Error);
+    }
+
+    [Fact]
+    public async Task RebuildFromCurrentRow_RunsTheServiceAndShowsItsStatus()
+    {
+        // Un tas : le service refuse avant toute lecture du serveur, le lecteur injoignable n'est jamais appelé.
+        var f = FixtureSet.Load("2022", "heap");
+        await using var cache = await CacheAsync(f);
+        var vm = new InspectorViewModel(new DecodingService(cache, Lookup(f), isLive: true), UnreachableReader());
+        var update = f.ForTable("dbo.h").Records.First(r => r.Operation is "LOP_MODIFY_ROW" or "LOP_MODIFY_COLUMNS" && !r.IsCompensation);
+        await vm.InspectAsync(update);
+        Assert.StartsWith("rebuilt", vm.ReplayStatus);
+
+        await vm.RebuildFromCurrentRowCommand.ExecuteAsync(null);
+
+        Assert.Equal("not available for a heap", vm.ReplayStatus);
+        Assert.Null(vm.Error);
     }
 
     private static string Hex(byte[] bytes) => Convert.ToHexString(bytes);
