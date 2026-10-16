@@ -78,6 +78,7 @@ public sealed class LogCache : IAsyncDisposable, IDisposable
     public async Task<long> InsertBatchAsync(IReadOnlyList<LogRecord> records, CancellationToken ct = default)
     {
         if (records.Count == 0) return 0;
+        using var gate = await ConnectionGate.EnterAsync(_connection, ct);
 
         await using var tx = (SqliteTransaction)await _connection.BeginTransactionAsync(ct);
         await using var cmd = _connection.CreateCommand();
@@ -152,6 +153,7 @@ public sealed class LogCache : IAsyncDisposable, IDisposable
     /// <summary>Clés canoniques calculées par DecodingService (spec03 §7.1), indexées pour les chaînes.</summary>
     public async Task SetRowKeysAsync(IReadOnlyList<(string Lsn, string? RowKey)> keys, CancellationToken ct = default)
     {
+        using var gate = await ConnectionGate.EnterAsync(_connection, ct);
         await using var tx = (SqliteTransaction)await _connection.BeginTransactionAsync(ct);
         await using var cmd = _connection.CreateCommand();
         cmd.Transaction = tx;
@@ -178,6 +180,8 @@ public sealed class LogCache : IAsyncDisposable, IDisposable
 
     public async ValueTask DisposeAsync()
     {
+        // Une inspection en cours finit sa requête avant la fermeture.
+        using (await ConnectionGate.EnterAsync(_connection)) { }
         await _connection.DisposeAsync();
         DeleteFile();
     }

@@ -52,7 +52,7 @@ public partial class MainWindow : Window
     {
         if (DataContext is not MainWindowViewModel vm) return;
 
-        var dialog = new Views.ConnectionDialog { DataContext = new ConnectionDialogViewModel() };
+        var dialog = new Views.ConnectionDialog { DataContext = new ConnectionDialogViewModel { IsSchemaSource = true } };
         var result = await dialog.ShowDialog<(string ConnectionString, LsnRange? Range)?>(this);
         if (result is { } r && !string.IsNullOrWhiteSpace(r.ConnectionString))
             await vm.ConnectSchemaSourceAsync(r.ConnectionString);

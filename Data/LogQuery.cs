@@ -17,6 +17,7 @@ public sealed class LogQuery
     public async Task<IReadOnlyList<LogRecord>> GetPageAsync(
         int offset, int limit, LogFilter? filter = null, CancellationToken ct = default)
     {
+        using var gate = await ConnectionGate.EnterAsync(_connection, ct);
         await using var cmd = _connection.CreateCommand();
         var where = AppendFilter(cmd, filter);
         cmd.CommandText = $"{SelectRecords}{where} ORDER BY LSN LIMIT $limit OFFSET $offset;";
@@ -42,6 +43,7 @@ public sealed class LogQuery
     /// <summary>Enregistrements de données de l'unité d'allocation dont RowKey est encore NULL, compensations exclues (spec03 §7.1).</summary>
     public async Task<IReadOnlyList<LogRecord>> GetUnkeyedDataRecordsAsync(long allocUnitId, CancellationToken ct = default)
     {
+        using var gate = await ConnectionGate.EnterAsync(_connection, ct);
         await using var cmd = _connection.CreateCommand();
         cmd.CommandText = $"{SelectRecords} WHERE AllocUnitId = $au AND RowKey IS NULL AND {DataRecords} AND {NotCompensation} ORDER BY LSN;";
         cmd.Parameters.AddWithValue("$au", allocUnitId);
@@ -51,6 +53,7 @@ public sealed class LogQuery
     /// <summary>Chaîne d'une ligne d'une table clustered : ses enregistrements de données, dans l'ordre des LSN (spec03 §7.1).</summary>
     public async Task<IReadOnlyList<LogRecord>> GetChainAsync(long allocUnitId, string rowKey, CancellationToken ct = default)
     {
+        using var gate = await ConnectionGate.EnterAsync(_connection, ct);
         await using var cmd = _connection.CreateCommand();
         cmd.CommandText = $"{SelectRecords} WHERE AllocUnitId = $au AND RowKey = $key AND {DataRecords} ORDER BY LSN;";
         cmd.Parameters.AddWithValue("$au", allocUnitId);
@@ -62,6 +65,7 @@ public sealed class LogQuery
     /// l'appelant y découpe la vie de la ligne entre un insert et un delete (spec03 §7.1).</summary>
     public async Task<IReadOnlyList<LogRecord>> GetHeapChainAsync(long allocUnitId, string pageId, int slotId, CancellationToken ct = default)
     {
+        using var gate = await ConnectionGate.EnterAsync(_connection, ct);
         await using var cmd = _connection.CreateCommand();
         cmd.CommandText = $"{SelectRecords} WHERE AllocUnitId = $au AND PageId = $page AND SlotId = $slot AND {DataRecords} AND {NotCompensation} ORDER BY LSN;";
         cmd.Parameters.AddWithValue("$au", allocUnitId);
@@ -74,6 +78,7 @@ public sealed class LogQuery
     /// ce que lisent RowReplayer.Classify, AdrReverts et FirstUndoLsns (spec03 §7.3), et le nom de la transaction (§5).</summary>
     public async Task<IReadOnlyList<LogRecord>> GetTransactionRecordsAsync(IReadOnlyCollection<string> transactionIds, CancellationToken ct = default)
     {
+        using var gate = await ConnectionGate.EnterAsync(_connection, ct);
         var list = new List<LogRecord>();
         // Par paquets : le nombre de paramètres d'une requête SQLite est borné.
         foreach (var chunk in transactionIds.Distinct().Chunk(500))
@@ -98,6 +103,7 @@ public sealed class LogQuery
     /// <summary>Le plus grand LSN du cache, d'où l'ancre 3 reprend la lecture du journal (spec03 §7.2) ; null pour un cache vide.</summary>
     public async Task<string?> GetLastLsnAsync(CancellationToken ct = default)
     {
+        using var gate = await ConnectionGate.EnterAsync(_connection, ct);
         await using var cmd = _connection.CreateCommand();
         cmd.CommandText = "SELECT MAX(LSN) FROM LogRecords;";
         return await cmd.ExecuteScalarAsync(ct) as string;
@@ -133,6 +139,7 @@ public sealed class LogQuery
     public async Task<IReadOnlyList<OperationCount>> CountByOperationAsync(
         LogFilter? filter = null, CancellationToken ct = default)
     {
+        using var gate = await ConnectionGate.EnterAsync(_connection, ct);
         await using var cmd = _connection.CreateCommand();
         var where = AppendFilter(cmd, filter);
         cmd.CommandText =
@@ -148,6 +155,7 @@ public sealed class LogQuery
     public async Task<IReadOnlyList<ObjectCount>> CountByObjectAsync(
         LogFilter? filter = null, CancellationToken ct = default)
     {
+        using var gate = await ConnectionGate.EnterAsync(_connection, ct);
         await using var cmd = _connection.CreateCommand();
         var where = AppendFilter(cmd, filter);
         var and = where.Length == 0 ? " WHERE" : where + " AND";
@@ -165,6 +173,7 @@ public sealed class LogQuery
     public async Task<IReadOnlyList<ObjectOperationCount>> CountByObjectAndOperationAsync(
         LogFilter? filter = null, CancellationToken ct = default)
     {
+        using var gate = await ConnectionGate.EnterAsync(_connection, ct);
         await using var cmd = _connection.CreateCommand();
         var where = AppendFilter(cmd, filter);
         var and = where.Length == 0 ? " WHERE" : where + " AND";

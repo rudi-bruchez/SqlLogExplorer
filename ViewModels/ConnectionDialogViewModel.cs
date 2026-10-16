@@ -33,6 +33,9 @@ public partial class ConnectionDialogViewModel : ViewModelBase
     [ObservableProperty] private TimeSpan? _endTimeOfDay;
     [ObservableProperty] private string? _statusMessage;
 
+    /// <summary>La boîte choisit une source de schéma (spec03 §4) : elle ne lit pas le journal, la fenêtre de temps n'a pas de sens.</summary>
+    public bool IsSchemaSource { get; init; }
+
     public ObservableCollection<string> Databases { get; } = new();
     public ObservableCollection<string> RecentServers { get; } = new();
 
@@ -85,6 +88,7 @@ public partial class ConnectionDialogViewModel : ViewModelBase
         if (string.IsNullOrWhiteSpace(SelectedDatabase))
             throw new InvalidOperationException("Please select a database first.");
 
+        if (IsSchemaSource) return null;   // fn_dblog demande sysadmin, qu'une source de schéma n'a pas à avoir
         var resolvedStart = GetResolvedStartTime();
         var resolvedEnd = GetResolvedEndTime();
         if (resolvedStart is null && resolvedEnd is null) return null;

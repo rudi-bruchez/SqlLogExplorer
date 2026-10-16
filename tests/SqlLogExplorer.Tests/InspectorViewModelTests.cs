@@ -225,5 +225,48 @@ public class InspectorViewModelTests
         Assert.True(vm.Notes is null || !vm.Notes.Contains("Bytes"), vm.Notes);
     }
 
+    // ---- Utilisabilité (revue finale, mineures) ----
+
+    [Fact]
+    public async Task Inspection_DoesNotRunOnTheSelectingThread()
+    {
+        // Les appels asynchrones de SQLite se terminent de façon synchrone : sans Task.Run, une recherche lente fige le thread qui sélectionne.
+        var f = FixtureSet.Load("2022", "modify");
+        await using var cache = await CacheAsync(f);
+        using var gate = new ManualResetEventSlim();
+        Func<long, CancellationToken, Task<TableSchema?>> blocking = (au, _) =>
+        {
+            gate.Wait(TimeSpan.FromSeconds(2));
+            return Task.FromResult(f.Schemas.TryGetValue(au, out var s) ? s : null);
+        };
+        var vm = new InspectorViewModel(new DecodingService(cache, blocking, isLive: false), null);
+
+        var inspection = vm.InspectAsync(FirstModify(f));
+        var returnedAtOnce = !inspection.IsCompleted;
+        gate.Set();
+        await inspection;
+
+        Assert.True(returnedAtOnce);
+        Assert.StartsWith("rebuilt", vm.ReplayStatus);
+    }
+
+    [Fact]
+    public async Task AnOfflineReimport_KeepsTheSchemaSource()
+    {
+        var f = FixtureSet.Load("2022", "modify");
+        await using var vm = new MainWindowViewModel(_ => new SchemaSource(Lookup(f), _ => Task.FromResult(true)));
+        await vm.ShowAsync(await CacheAsync(f), liveConnectionString: null);
+        await vm.ConnectSchemaSourceAsync("Server=offline;Database=db");
+
+        await vm.ShowAsync(await CacheAsync(f), liveConnectionString: null);   // ce que fait un nouvel import hors ligne
+        var modify = FirstModify(f);
+        vm.Records!.SelectedRecord = vm.Records.Records.Single(r => r.Lsn == modify.Lsn);
+        await vm.Selection;
+
+        Assert.Null(vm.Inspector!.SchemaMessage);
+        Assert.StartsWith("rebuilt", vm.Inspector.ReplayStatus);
+        Assert.True(vm.CanConnectSchemaSource);
+    }
+
     private static string Hex(byte[] bytes) => Convert.ToHexString(bytes);
 }

@@ -20,6 +20,21 @@ public class LogQueryTests
     }
 
     [Fact]
+    public async Task AQuery_WaitsWhileAnotherUserHoldsTheConnection()
+    {
+        // L'inspection tourne hors du thread UI : la grille ne doit pas utiliser la connexion en même temps.
+        await using var cache = await SeedAsync();
+        var held = await ConnectionGate.EnterAsync(cache.Connection);
+
+        var query = new LogQuery(cache.Connection).GetLastLsnAsync();
+        var waited = !query.IsCompleted;
+        held.Dispose();
+
+        Assert.True(waited);
+        Assert.NotNull(await query);
+    }
+
+    [Fact]
     public async Task GetPageAsync_RespectsLimitOffsetAndOrder()
     {
         await using var cache = await SeedAsync();

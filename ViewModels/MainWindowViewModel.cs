@@ -29,6 +29,7 @@ public partial class MainWindowViewModel : ViewModelBase, IAsyncDisposable
     private readonly Func<string, SchemaSource> _schemaSource;
     private LogCache? _cache;
     private string? _liveConnectionString;   // la base analysée en direct : source du schéma et de la ligne courante
+    private SchemaSource? _offlineSchemaSource;   // hors ligne, la source connectée : un nouvel import la garde
     private CancellationTokenSource? _cts;
 
     public MainWindowViewModel() : this(cs =>
@@ -123,8 +124,9 @@ public partial class MainWindowViewModel : ViewModelBase, IAsyncDisposable
         await Statistics.RefreshAsync();
         OnPropertyChanged(nameof(Statistics));
 
+        if (liveConnectionString is not null) _offlineSchemaSource = null;
         Inspector = liveConnectionString is null
-            ? new InspectorViewModel(new DecodingService(cache, null, isLive: false), null)
+            ? new InspectorViewModel(new DecodingService(cache, _offlineSchemaSource?.Lookup, isLive: false), null)
             : new InspectorViewModel(new DecodingService(cache, _schemaSource(liveConnectionString).Lookup, isLive: true),
                 new CurrentRowReader(liveConnectionString));
         CanConnectSchemaSource = liveConnectionString is null;
@@ -156,6 +158,7 @@ public partial class MainWindowViewModel : ViewModelBase, IAsyncDisposable
             return;
         }
 
+        _offlineSchemaSource = source;
         Inspector = new InspectorViewModel(new DecodingService(_cache, source.Lookup, isLive: false), null);
         StatusMessage = privileged
             ? "Schema source connected."

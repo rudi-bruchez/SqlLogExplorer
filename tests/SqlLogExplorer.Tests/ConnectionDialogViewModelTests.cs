@@ -23,6 +23,21 @@ public class ConnectionDialogViewModelTests
     }
 
     [Fact]
+    public async Task ASchemaSource_NeverResolvesARange()
+    {
+        // Une source de schéma n'a pas besoin de fn_dblog, que ses connexions sans sysadmin ne peuvent pas lire :
+        // aucune connexion n'est ouverte, même avec une fenêtre de temps remplie (serveur injoignable ici).
+        var vm = new ConnectionDialogViewModel
+        {
+            Server = "127.0.0.1,1", Auth = SqlAuthMode.SqlLogin, UserName = "u", Password = "p", SelectedDatabase = "db",
+            StartTime = new System.DateTimeOffset(2023, 1, 1, 0, 0, 0, System.TimeSpan.Zero), IsSchemaSource = true,
+        };
+
+        using var cts = new System.Threading.CancellationTokenSource(System.TimeSpan.FromSeconds(5));
+        Assert.Null(await vm.ResolveRangeAsync(cts.Token));
+    }
+
+    [Fact]
     public void GetResolvedStartTime_CombinesDateAndTime()
     {
         var vm = new ConnectionDialogViewModel

@@ -55,7 +55,9 @@ public sealed partial class InspectorViewModel : ViewModelBase
         FillBytes(record, null);
         try
         {
-            var inspection = await _service.InspectAsync(record);
+            // Hors du thread UI : les appels de SQLite se terminent de façon synchrone, et la première sélection d'une grande table
+            // pose la clé de toutes ses lignes (7,8 s pour 300 000). Le retour se fait sur le thread appelant.
+            var inspection = await Task.Run(() => _service.InspectAsync(record));
             var canRebuild = inspection.CanRebuildFromCurrentRow && await ReaderAvailableAsync();
             if (generation == _generation) Show(inspection, canRebuild);
         }
@@ -76,7 +78,7 @@ public sealed partial class InspectorViewModel : ViewModelBase
         ReplayStatus = "reading the current row…";
         try
         {
-            var inspection = await _service.RebuildFromCurrentRowAsync(record, _reader);
+            var inspection = await Task.Run(() => _service.RebuildFromCurrentRowAsync(record, _reader));
             if (generation == _generation) Show(inspection, false);
         }
         catch (Exception ex)

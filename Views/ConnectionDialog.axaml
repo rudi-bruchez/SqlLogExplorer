@@ -48,9 +48,9 @@
                 <TextBlock Text="Database:" FontWeight="Bold" Margin="0,8,0,0"/>
                 <ComboBox ItemsSource="{Binding Databases}" SelectedItem="{Binding SelectedDatabase}" HorizontalAlignment="Stretch" PlaceholderText="Select a database..." />
 
-                <!-- Time Window (Optional) -->
-                <TextBlock Text="Time Window (Optional):" FontWeight="Bold" Margin="0,8,0,0"/>
-                <Grid ColumnDefinitions="Auto,*,Auto" RowDefinitions="Auto,Auto">
+                <!-- Time Window (Optional) : sans objet pour une source de schéma -->
+                <TextBlock Text="Time Window (Optional):" FontWeight="Bold" Margin="0,8,0,0" IsVisible="{Binding !IsSchemaSource}"/>
+                <Grid ColumnDefinitions="Auto,*,Auto" RowDefinitions="Auto,Auto" IsVisible="{Binding !IsSchemaSource}">
                     <TextBlock Grid.Row="0" Grid.Column="0" Text="Start:" VerticalAlignment="Center" Margin="0,0,8,8"/>
                     <CalendarDatePicker Grid.Row="0" Grid.Column="1" SelectedDate="{Binding StartTime}" HorizontalAlignment="Stretch" Margin="0,0,8,8" />
                     <TimePicker Grid.Row="0" Grid.Column="2" SelectedTime="{Binding StartTimeOfDay}" Margin="0,0,0,8" />
