@@ -8,6 +8,16 @@ public class CurrentRowParsingTests
 {
     public static TheoryData<string> Versions => new() { "2017", "2019", "2022", "2025" };
 
+    [Fact]
+    public void KeyMatches_RejectsAMalformedSlot_EvenForANullKey()
+    {
+        var s = new TableSchema(1, "dbo", "n", 1, 1, new[] { Col(1, "k", 4, 1, 56, 4, keyOrdinal: 1), Col(2, "v", 8, 2, 56, 4) });
+        var k = s.Columns[0];
+
+        Assert.True(CurrentRowReader.KeyMatches(Convert.FromHexString("10000C0000000000010000000200" + "01"), s, [(k, null)]));   // k NULL
+        Assert.False(CurrentRowReader.KeyMatches(Convert.FromHexString("10000C0001"), s, [(k, null)]));                        // ligne tronquée
+    }
+
     [Theory, MemberData(nameof(Versions))]
     public void ParseSlotDump_RebuildsTheRowOfDboU(string version)
     {

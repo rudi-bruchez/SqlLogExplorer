@@ -24,6 +24,7 @@ public static class KeyDecoder
             var field = decoded.Fields.FirstOrDefault(f => f.Column == c.Name && f.Role is FieldRole.FixedColumn or FieldRole.VariableColumn);
             var column = decoded.Columns.FirstOrDefault(x => x.Name == c.Name);
             if (column is null || (field is null && c.IsFixed)) return null;   // colonne illisible : Malformed, absente ou hors zone
+            if (Unread(column)) return null;
             // NULL : valeur absente sans réserve ; un type non décodé garde une note mais ses octets restent comparables.
             if (column.Value is null && column.Note is null) AppendNull(sb);
             // Colonne variable finale, vide ou NULL : absente du tableau d'offsets, donc sans octets.
@@ -35,11 +36,16 @@ public static class KeyDecoder
         if (u is not null)
         {
             // Premier enregistrement d'une clé : uniqueifier de longueur nulle ou absent, soit 0 (RowDecoder).
-            var value = decoded.Columns.FirstOrDefault(x => x.Name == u.Name)?.Value;
-            sb.Append('U').Append(value is int i ? i : 0);
+            var column = decoded.Columns.FirstOrDefault(x => x.Name == u.Name);
+            if (column is not null && Unread(column)) return null;
+            sb.Append('U').Append(column?.Value is int i ? i : 0);
         }
         return sb.ToString();
     }
+
+    /// <summary>Une note de RowDecoder sur une colonne de clé (malformée, hors ligne, ajoutée après la ligne) : ses octets ne sont pas
+    /// ceux de la clé, une clé faite avec viserait une autre ligne. Un type non décodé garde ses octets, qui restent comparables.</summary>
+    private static bool Unread(DecodedColumn column) => column.Note is not null && (column.Value is null || column.Note == RowDecoder.AddedAfterRow);
 
     public static string? FromIndexRecord(byte[]? record, TableSchema schema)
     {

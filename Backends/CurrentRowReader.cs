@@ -230,9 +230,10 @@ public sealed partial class CurrentRowReader
 
     /// <summary>Chaque colonne de clé de la ligne lue vaut celle de l'enregistrement choisi, uniqueifier compris (0 pour la première ligne d'une clé).
     /// Les valeurs sont comparées sans collation : deux chaînes que la collation confond restent distinctes, comme leurs octets.</summary>
-    private static bool KeyMatches(byte[] row, TableSchema schema, IReadOnlyList<(SchemaColumn Column, object? Value)> key)
+    internal static bool KeyMatches(byte[] row, TableSchema schema, IReadOnlyList<(SchemaColumn Column, object? Value)> key)
     {
         var decoded = RowDecoder.Decode(row, schema);
+        if (decoded.HasProblem) return false;   // un slot mal lu n'a pas de colonnes : une clé NULL lui irait
         foreach (var (column, value) in key)
         {
             var actual = decoded.Columns.FirstOrDefault(c => c.Name == column.Name)?.Value;

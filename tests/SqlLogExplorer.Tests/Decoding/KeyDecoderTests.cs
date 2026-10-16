@@ -216,6 +216,20 @@ public class KeyDecoderTests
         Assert.Null(KeyDecoder.FromRow(Hex("10000C0001"), S));                                         // ligne tronquée
     }
 
+    // ---- Colonne de clé non lue : pas de clé, plutôt qu'une clé fabriquée (spec03 §7.1) ----
+
+    [Fact]
+    public void KeyColumnOrUniqueifierWithANote_GivesNoKey()
+    {
+        // k1 hors ligne (fin 0x16 | 0x8000) : l'ancien code l'encodait comme une chaîne vide.
+        Assert.Null(KeyDecoder.FromRow(Hex("30000C00070000000100000003000001001680616263"), K));
+        // k1 dans une page de code inconnue : ses octets ne vont pas au type.
+        var kBadCodePage = K with { Columns = K.Columns.Select(c => c.Name == "k1" ? c with { CodePage = 12345 } : c).ToList() };
+        Assert.Null(KeyDecoder.FromRow(Hex("30000C00070000000100000003000001001600616263"), kBadCodePage));
+        // Uniqueifier de 3 octets dans la ligne : l'ancien code en faisait U0.
+        Assert.Null(KeyDecoder.FromRow(Hex("30000C00010000000200000003000001001600010000"), N));
+    }
+
     // ---- Fixtures : journaux réels de SQL Server 2017 à 2025 ----
 
     public static TheoryData<string> Versions => new() { "2017", "2019", "2022", "2025" };
