@@ -577,6 +577,74 @@ public class DecodingServiceTests
         Assert.Equal(new ColumnChange("d", new NotedValue(false, true, FromFragment), new NotedValue(true, true, FromFragment), true), change);
     }
 
+    // ---- Lignes de propagation du service (revue de mutation) ----
+
+    [Fact]
+    public async Task RolledBackTransactionThatUndidASavepoint_IsNotReplayed()
+    {
+        // BEGIN TRAN; a = 30; SAVE TRAN s; a = 31; ROLLBACK TRAN s; b = 'z'; ROLLBACK : b = 'z' suit la compensation du point de sauvegarde.
+        var f = FixtureSet.Load("2022", "rollback_savepoint_plain");
+        var mods = Modifies(f.ForTable("dbo.p").Records);
+        await using var cache = await CacheAsync(f.Log);
+
+        var x = await new DecodingService(cache, Lookup(f), false).InspectAsync(mods[2]);
+
+        Assert.Equal(TxOutcome.RolledBack, x.Outcome);
+        Assert.Equal("partial rollback before the selected record, not replayed", x.ReplayStatus);
+        Assert.Null(x.After);
+    }
+
+    [Fact]
+    public void HeapLife_IsNotBoundedByAnotherTransactionThatRolledBack()
+    {
+        static LogRecord R(int n, string operation, string tx) => new($"00000001:00000001:{n:X4}", operation, "LCX_HEAP", tx, "dbo.h", null, null);
+        // Au même slot : un delete puis un insert d'une transaction X annulée encadrent le modify choisi ; leur effet net est nul.
+        var all = new[] { R(1, "LOP_INSERT_ROWS", "A"), R(2, "LOP_DELETE_ROWS", "X"), R(3, "LOP_MODIFY_ROW", "B"), R(4, "LOP_INSERT_ROWS", "X"), R(5, "LOP_DELETE_ROWS", "C") };
+        var outcomes = new Dictionary<string, TxOutcome>
+        {
+            ["A"] = TxOutcome.Committed, ["B"] = TxOutcome.Committed, ["C"] = TxOutcome.Committed, ["X"] = TxOutcome.RolledBack,
+        };
+
+        var life = DecodingService.HeapLife(all, all[2], outcomes);
+
+        Assert.Equal(all.Select(r => r.Lsn), life.Select(r => r.Lsn));
+    }
+
+    [Fact]
+    public async Task AChainThroughATransactionOfUnknownOutcome_SaysSo()
+    {
+        var f = FixtureSet.Load("2022", "modify");
+        var mods = Modifies(f.ForTable("dbo.t").Records);
+        var tx = mods[0].TransactionId;
+        // Sans son commit, la transaction du premier modify n'a pas d'issue dans le journal.
+        await using var cache = await CacheAsync(f.Log.Where(r => !(r.TransactionId == tx && r.Operation == "LOP_COMMIT_XACT")).ToList());
+
+        var x = await new DecodingService(cache, Lookup(f), false).InspectAsync(mods[0]);
+
+        Assert.Equal(TxOutcome.Unknown, x.Outcome);
+        Assert.StartsWith("rebuilt", x.ReplayStatus);
+        Assert.True(x.IncludesUnknownOutcome);
+    }
+
+    [Fact]
+    public async Task ALowercaseLsn_IsNormalizedOnEntry()
+    {
+        var f = FixtureSet.Load("2022", "modify");
+        var modify = Modifies(f.ForTable("dbo.t").Records)[0];
+        var lower = modify with { Lsn = modify.Lsn.ToLowerInvariant() };
+        Assert.NotEqual(modify.Lsn, lower.Lsn);
+        var h = FixtureSet.Load("2022", "heap");
+        var heapUpdate = Modifies(h.ForTable("dbo.h").Records).First();
+        await using var cache = await CacheAsync(f.Log);
+        await using var heapCache = await CacheAsync(h.Log);
+
+        var x = await new DecodingService(cache, Lookup(f), false).InspectAsync(lower);
+        var chain = await new DecodingService(heapCache, Lookup(h), false).GetRowChainAsync(heapUpdate with { Lsn = heapUpdate.Lsn.ToLowerInvariant() });
+
+        Assert.Equal(ExpectedT[0], Values(x.After));
+        Assert.Contains(chain, r => r.Lsn == heapUpdate.Lsn);
+    }
+
     // ---- Fragment seul (spec03 §6.1) : sans ligne complète, le bitmap de NULL est inconnu ----
 
     private const string FromFragment = "from the fragment alone, NULL state unknown";

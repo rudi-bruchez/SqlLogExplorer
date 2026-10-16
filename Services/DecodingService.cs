@@ -197,7 +197,7 @@ public sealed class DecodingService
 
     /// <summary>Vie d'une ligne de tas à son adresse : du dernier insert jusqu'au premier delete autour de l'enregistrement (spec03 §7.1).
     /// Un enregistrement d'une autre transaction annulée ne borne rien : son effet net est nul.</summary>
-    private static IReadOnlyList<LogRecord> HeapLife(IReadOnlyList<LogRecord> all, LogRecord selected, IReadOnlyDictionary<string, TxOutcome> outcomes)
+    internal static IReadOnlyList<LogRecord> HeapLife(IReadOnlyList<LogRecord> all, LogRecord selected, IReadOnlyDictionary<string, TxOutcome> outcomes)
     {
         var i = all.ToList().FindIndex(r => r.Lsn == selected.Lsn);
         if (i < 0) return [];

@@ -124,6 +124,22 @@ public class CurrentRowReaderIntegrationTests
     }
 
     [IntegrationFact]
+    public async Task ALowercaseLsn_IsNormalizedBeforeTheRebuild()
+    {
+        // Le LSN sert à la suite du journal et au rejeu : en minuscules, la comparaison ordinale ne retrouverait pas l'enregistrement.
+        await using var db = await Database.CreateAsync();
+        await db.ExecAsync("CREATE TABLE dbo.t(id int NOT NULL PRIMARY KEY, a int NULL); INSERT dbo.t VALUES (1, 10);");
+        await using var s = await ImportAfterInsertAsync(db, "dbo.t", "UPDATE dbo.t SET a = 11 WHERE id = 1;");
+        var lower = s.Selected with { Lsn = s.Selected.Lsn.ToLowerInvariant() };
+        Assert.NotEqual(s.Selected.Lsn, lower.Lsn);
+
+        var x = await s.Service.RebuildFromCurrentRowAsync(lower, new CurrentRowReader(db.ConnectionString));
+
+        Assert.Equal(FromCurrentRow, x.ReplayStatus);
+        Assert.Equal("id=1, a=11", Values(x.After));
+    }
+
+    [IntegrationFact]
     public async Task ADeleteSinceTheImport_GivesTheDeleteAnchor()
     {
         // La ligne supprimée sans retour : la recherche ne trouve rien, la suite porte quand même le delete.
