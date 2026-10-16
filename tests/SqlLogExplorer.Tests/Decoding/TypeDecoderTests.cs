@@ -69,6 +69,9 @@ public class TypeDecoderTests
     // Longueurs bonnes, valeurs impossibles : toujours ArgumentException, jamais Overflow ou NotSupported.
     [Fact] public void DateAfterYear9999_Throws() => Assert.ThrowsAny<ArgumentException>(() => D(40, "DBB937")); // 3652059
     [Fact] public void TimeOf24Hours_Throws() => Assert.ThrowsAny<ArgumentException>(() => D(41, "805101", 0, 0)); // 86400 s
+    // Une heure de 24 h ou plus dans un datetime2 ou un datetimeoffset ne passe pas au jour suivant.
+    [Fact] public void Datetime2TimeOf24Hours_Throws() => Assert.ThrowsAny<ArgumentException>(() => D(42, "805101" + "B4DC0A", 0, 0));
+    [Fact] public void DatetimeoffsetTimeOf24Hours_Throws() => Assert.ThrowsAny<ArgumentException>(() => D(43, "805101" + "B4DC0A" + "0000", 0, 0));
     [Fact] public void Datetime2AfterYear9999_Throws() => Assert.ThrowsAny<ArgumentException>(() => D(42, "000000" + "DBB937", 0, 0));
     [Fact] public void DecimalMagnitudeAbove38Digits_Throws() => Assert.ThrowsAny<ArgumentException>(() => D(108, "01" + string.Concat(Enumerable.Repeat("FFFFFFFF", 4)), 38, 0));
     [Fact] public void UnknownCodePage_Throws() => Assert.ThrowsAny<ArgumentException>(() => D(167, "41", codePage: 12345));

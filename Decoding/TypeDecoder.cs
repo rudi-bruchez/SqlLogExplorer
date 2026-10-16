@@ -133,10 +133,11 @@ public static class TypeDecoder
 
     private static TimeOnly Time(ReadOnlySpan<byte> b, int scale) => new(TimeTicks(b, scale));
 
+    // L'heure passe par TimeOnly, comme pour time : 24 h ou plus lève au lieu de glisser au jour suivant.
     private static DateTime DateTime2(ReadOnlySpan<byte> b, int scale)
     {
         var t = TimeLength(scale);
-        return DateOnly.FromDayNumber(UInt24(b[t..])).ToDateTime(TimeOnly.MinValue).AddTicks(TimeTicks(b[..t], scale));
+        return DateOnly.FromDayNumber(UInt24(b[t..])).ToDateTime(Time(b[..t], scale));
     }
 
     // datetimeoffset : heure UTC, date UTC, puis décalage en minutes (int16).
