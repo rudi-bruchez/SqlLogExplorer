@@ -81,8 +81,7 @@ public static class TypeDecoder
         62 => BinaryPrimitives.ReadDoubleLittleEndian(b),
         40 => DateOnly.FromDayNumber(UInt24(b)),
         41 => Time(b, c.Scale),
-        61 => Epoch1900.AddDays(BinaryPrimitives.ReadInt32LittleEndian(b[4..]))
-                       .AddTicks((long)Math.Round(BinaryPrimitives.ReadUInt32LittleEndian(b) * (TimeSpan.TicksPerSecond / 300.0))),
+        61 => Datetime(b),
         58 => Epoch1900.AddDays(BinaryPrimitives.ReadUInt16LittleEndian(b[2..])).AddMinutes(BinaryPrimitives.ReadUInt16LittleEndian(b)),
         42 => DateTime2(b, c.Scale),
         43 => DateTimeOffset(b, c.Scale),
@@ -138,6 +137,15 @@ public static class TypeDecoder
     {
         var t = TimeLength(scale);
         return DateOnly.FromDayNumber(UInt24(b[t..])).ToDateTime(Time(b[..t], scale));
+    }
+
+    // datetime : des 1/300 s depuis minuit (uint32), puis des jours depuis 1900 (int32). Un jour entier ou plus de 1/300 s
+    // lève, comme une heure de 24 h d'un datetime2, au lieu de glisser au jour suivant.
+    private static DateTime Datetime(ReadOnlySpan<byte> b)
+    {
+        var units = BinaryPrimitives.ReadUInt32LittleEndian(b);
+        if (units >= 300 * 86400) throw new ArgumentException($"time of {units}/300 s is a day or more");
+        return Epoch1900.AddDays(BinaryPrimitives.ReadInt32LittleEndian(b[4..])).AddTicks((long)Math.Round(units * (TimeSpan.TicksPerSecond / 300.0)));
     }
 
     // datetimeoffset : heure UTC, date UTC, puis décalage en minutes (int16).

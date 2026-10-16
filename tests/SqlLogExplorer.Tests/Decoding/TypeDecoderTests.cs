@@ -72,6 +72,10 @@ public class TypeDecoderTests
     // Une heure de 24 h ou plus dans un datetime2 ou un datetimeoffset ne passe pas au jour suivant.
     [Fact] public void Datetime2TimeOf24Hours_Throws() => Assert.ThrowsAny<ArgumentException>(() => D(42, "805101" + "B4DC0A", 0, 0));
     [Fact] public void DatetimeoffsetTimeOf24Hours_Throws() => Assert.ThrowsAny<ArgumentException>(() => D(43, "805101" + "B4DC0A" + "0000", 0, 0));
+    // datetime : 300 × 86 400 = 25 920 000 trois-centièmes font un jour entier, refusé ; un de moins est 23:59:59.997.
+    [Fact] public void DatetimeTimeOfOneDay_Throws() => Assert.ThrowsAny<ArgumentException>(() => D(61, "00828B01" + DaysHex1900(new DateTime(2026, 10, 15))));
+    [Fact] public void DatetimeLastTickOfTheDay_StaysOnItsDay() => Assert.Equal("2026-10-15 23:59:59.997",
+        TypeDecoder.Decode(Col(1, "c", 4, 1, 61, 8), Convert.FromHexString("FF818B01" + DaysHex1900(new DateTime(2026, 10, 15))))!.ToString());
     [Fact] public void Datetime2AfterYear9999_Throws() => Assert.ThrowsAny<ArgumentException>(() => D(42, "000000" + "DBB937", 0, 0));
     [Fact] public void DecimalMagnitudeAbove38Digits_Throws() => Assert.ThrowsAny<ArgumentException>(() => D(108, "01" + string.Concat(Enumerable.Repeat("FFFFFFFF", 4)), 38, 0));
     [Fact] public void UnknownCodePage_Throws() => Assert.ThrowsAny<ArgumentException>(() => D(167, "41", codePage: 12345));
