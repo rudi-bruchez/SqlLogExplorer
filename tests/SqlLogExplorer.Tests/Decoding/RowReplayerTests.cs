@@ -180,6 +180,31 @@ public class RowReplayerTests(ITestOutputHelper output)
     }
 
     [Fact]
+    public void InsertAnchorOfAPartlyRolledBackTransaction_StopsForwards()
+    {
+        // Seule l'ancre est dans la transaction partiellement annulée : les marches suivantes sont validées.
+        var outcomes = With(("P", TxOutcome.PartlyRolledBack));
+        var chain = new[] { Insert(1, "P", SpecRow), SetA(2, "B") };
+
+        var r = Replay(chain, 2, outcomes);
+
+        Assert.Null(r.After);
+        Assert.Equal($"partial rollback at LSN {L(1)}, not replayed", r.Status);
+    }
+
+    [Fact]
+    public void DeleteAnchorOfAPartlyRolledBackTransaction_StopsBackwards()
+    {
+        var outcomes = With(("P", TxOutcome.PartlyRolledBack));
+        var chain = new[] { SetA(2, "B"), Delete(3, "P", WithA(SpecRow, 0x0B)) };
+
+        var r = Replay(chain, 2, outcomes);
+
+        Assert.Null(r.After);
+        Assert.Equal($"partial rollback at LSN {L(3)}, not replayed", r.Status);
+    }
+
+    [Fact]
     public void SelectedRecordInAPartlyRolledBackTransaction_IsNotReplayed()
     {
         var outcomes = With(("P", TxOutcome.PartlyRolledBack));
@@ -315,6 +340,31 @@ public class RowReplayerTests(ITestOutputHelper output)
         var r = Replay(chain, 2);
 
         Assert.Null(r.After);
+        Assert.Equal("row forwarded, not followed", r.Status);
+    }
+
+    [Fact]
+    public void DeleteImageThatIsAForwardingStub_IsNotFollowedBackwards()
+    {
+        // Défaire le modify redonnerait une ligne primaire (0x30) : seule la garde sur l'image du delete arrête le rejeu.
+        var stub = (byte[])SpecRow.Clone(); stub[0] = 0x04;
+        var chain = new[] { Modify(2, "B", [0x30], [0x04], 0, 1), Delete(3, "D", stub) };
+
+        var r = Replay(chain, 2);
+
+        Assert.Null(r.Before);
+        Assert.Equal("row forwarded, not followed", r.Status);
+    }
+
+    [Fact]
+    public void ModifyUndoneIntoAForwardingStub_EndsTheChainBackwards()
+    {
+        // À rebours, défaire le modify en 3 rend un talon de renvoi (0x04).
+        var chain = new[] { SetA(2, "B"), Modify(3, "C", [0x04], [0x30], 0, 1), Delete(4, "D", WithA(SpecRow, 0x0B)) };
+
+        var r = Replay(chain, 2);
+
+        Assert.Null(r.Before);
         Assert.Equal("row forwarded, not followed", r.Status);
     }
 

@@ -216,6 +216,31 @@ public class KeyDecoderTests
         Assert.Null(KeyDecoder.FromRow(Hex("10000C0001"), S));                                         // ligne tronquée
     }
 
+    [Fact]
+    public void IndexRecord_WithMoreVariableEndsThanVariableKeyColumns_GivesNoKey()
+    {
+        // k n'a qu'une colonne variable de clé ; deux fins cohérentes (0x11, 0x12) n'en font pas une clé.
+        var record = Hex("36 07000000 0200 00 0200 1100 1200 616263 64");
+        Assert.Null(KeyDecoder.FromIndexRecord(record, K));
+        Assert.Null(KeyDecoder.ValuesFromIndexRecord(record, K));
+    }
+
+    [Fact]
+    public void IndexRecord_UniqueifierOfOtherThanFourBytes_GivesNoKey()
+    {
+        // Fin de variable cohérente avec la longueur de l'enregistrement : seule la longueur de l'uniqueifier est fausse.
+        Assert.Null(KeyDecoder.FromIndexRecord(Hex("36 01000000 0200 00 0100 0F00 000000"), N));        // 3 octets
+        Assert.Null(KeyDecoder.FromIndexRecord(Hex("36 01000000 0200 00 0100 1100 0100000000"), N));    // 5 octets
+    }
+
+    [Fact]
+    public void ValuesFromIndexRecord_KeyBytesTheTypeRefuses_GivesNoValues()
+    {
+        // k1 dans une page de code inconnue : TypeDecoder lève ArgumentException, rien n'est cherché.
+        var kBadCodePage = K with { Columns = K.Columns.Select(c => c.Name == "k1" ? c with { CodePage = 12345 } : c).ToList() };
+        Assert.Null(KeyDecoder.ValuesFromIndexRecord(Hex("360700000002000001000F00616263"), kBadCodePage));
+    }
+
     // ---- Colonne de clé non lue : pas de clé, plutôt qu'une clé fabriquée (spec03 §7.1) ----
 
     [Fact]

@@ -76,6 +76,18 @@ public class TypeDecoderTests
     [Fact] public void DecimalMagnitudeAbove38Digits_Throws() => Assert.ThrowsAny<ArgumentException>(() => D(108, "01" + string.Concat(Enumerable.Repeat("FFFFFFFF", 4)), 38, 0));
     [Fact] public void UnknownCodePage_Throws() => Assert.ThrowsAny<ArgumentException>(() => D(167, "41", codePage: 12345));
 
+    // Métadonnées de colonne impossibles (schéma d'une autre base, catalogue mal lu) : refus, jamais une valeur.
+    [Theory] [InlineData(8)] [InlineData(-1)]
+    public void BitPositionOutsideTheByte_Throws(int position) =>
+        Assert.ThrowsAny<ArgumentException>(() => TypeDecoder.Decode(Col(1, "c", 4, 1, 104, 1, bitPos: position), new byte[] { 0xFF }));
+
+    [Theory] [InlineData(41, 5)] [InlineData(42, 8)] [InlineData(43, 10)]
+    public void ScaleAbove7_Throws(int type, int length) => Assert.ThrowsAny<ArgumentException>(() => D(type, new string('0', 2 * length), 0, 8));
+
+    [Theory] [InlineData(0)] [InlineData(39)]
+    public void DecimalPrecisionOutside1To38_Throws(int precision) =>
+        Assert.ThrowsAny<ArgumentException>(() => D(106, "01" + new string('0', 32), precision, 0));
+
     private static string DateHex(DateOnly d) => Convert.ToHexString(BitConverter.GetBytes(d.DayNumber))[..6];
     private static string Ticks5Hex(long ticks) => Convert.ToHexString(BitConverter.GetBytes(ticks))[..10];
     private static string DaysHex1900(DateTime d) => Convert.ToHexString(BitConverter.GetBytes((int)(d.Date - new DateTime(1900, 1, 1)).TotalDays));

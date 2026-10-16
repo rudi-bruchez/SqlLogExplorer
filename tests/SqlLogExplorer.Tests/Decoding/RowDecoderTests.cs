@@ -197,6 +197,59 @@ public class RowDecoderTests
         Assert.DoesNotContain(row.Fields, f => f.Problem?.Contains("compressed rows are not decoded") == true);
     }
 
+    [Fact]
+    public void CompressedTable_RowWhoseFirstByteHasBit0Clear_IsStillRejected()
+    {
+        // L'octet 0x10 passe la garde du bit 0 : seul le schéma (leaf_offset négatif d'un int) dit que la table est compressée.
+        var s = new TableSchema(1, "dbo", "cs", 1, 1, new[] { Col(1, "id", -1, 1, 56, 4, keyOrdinal: 1), Col(2, "a", -2, 2, 56, 4) });
+        var row = RowDecoder.Decode(Hex("10000C00010000000A000000020000"), s);
+
+        Assert.Empty(row.Columns);
+        Assert.Contains(row.Fields, f => f.Role == FieldRole.Malformed && f.Offset == 0 && f.Problem == "compressed rows are not decoded");
+    }
+
+    // ---- Gardes de la structure : chacune a son entrée (revue de mutation) ----
+
+    [Fact]
+    public void ColumnCountGreaterThanTheSchemas_IsMalformed()   // N = 6 pour les 5 colonnes de t, partie fixe juste
+    {
+        var row = RowDecoder.Decode(Hex("30000D00010000000A000000F106000001001700616263"), T);
+
+        Assert.Contains(row.Fields, f => f.Role == FieldRole.Malformed && f.Offset == 13 && f.Problem == "column count greater than the schema's");
+    }
+
+    [Fact]
+    public void VersioningBitWithFewerThanFourteenBytes_IsMalformed()   // bit 6 de A posé, 2 octets après les données variables
+    {
+        var row = RowDecoder.Decode(Hex("70000D00010000000A000000F105000001001700616263" + "AABB"), T);
+
+        Assert.Contains(row.Fields, f => f.Role == FieldRole.Malformed && f.Offset == 23 && f.Length == 2 && f.Problem == "versioning tag beyond the row");
+        Assert.DoesNotContain(row.Fields, f => f.Role == FieldRole.VersionTag);
+    }
+
+    [Fact]
+    public void FixedEndBeforeAColumnsEnd_LeavesThatColumnUnread()   // F = 12 : c et d, à l'octet 12, sont au-delà
+    {
+        var row = RowDecoder.Decode(Hex("30000C00010000000A00000005000001001600616263"), T);
+
+        Assert.Contains(row.Fields, f => f.Role == FieldRole.Malformed && f.Column == "c" && f.Problem == "fixed column beyond the fixed-data end offset");
+        Assert.DoesNotContain(row.Columns, c => c.Name is "c" or "d");
+        Assert.Equal(10, V(row, "a"));
+    }
+
+    [Fact]
+    public void ColumnBytesTheTypeRefuses_GiveANote_NotAnException()   // b dans une page de code inconnue : TypeDecoder lève
+    {
+        var s = T with { Columns = T.Columns.Select(c => c.Name == "b" ? c with { CodePage = 12345 } : c).ToList() };
+        var row = RowDecoder.Decode(Hex("30000D00010000000A000000F105000001001700616263"), s);
+
+        var b = row.Columns.Single(c => c.Name == "b");
+        Assert.Null(b.Value);
+        Assert.Equal("3 bytes do not fit the column type", b.Note);
+        Assert.Contains(row.Fields, f => f.Role == FieldRole.Malformed && f.Column == "b" && f.Offset == 20);
+        Assert.Equal(10, V(row, "a"));
+    }
+
     // ---- Fixtures : journaux réels de SQL Server 2017 à 2025 (spec03 §10.1) ----
 
     public static TheoryData<string> Versions => new() { "2017", "2019", "2022", "2025" };
