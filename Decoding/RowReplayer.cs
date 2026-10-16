@@ -48,8 +48,9 @@ public static class RowReplayer
         if (selected is null || selected.Operation is not ("LOP_MODIFY_ROW" or "LOP_MODIFY_COLUMNS"))
             return Fail(NoImage);
 
-        // Une révocation ADR n'importe où dans la chaîne, avant ou après l'enregistrement choisi, arrête tout rejeu (§7.3).
-        if (chain.Any(r => r.TransactionId is not null && adrReverts.Contains(r.TransactionId))) return Fail("ADR revert in the chain, not replayed");
+        // Une révocation ADR dans la vie de la clé, avant ou après l'enregistrement choisi, arrête tout rejeu (§7.3, §7.4).
+        if (Life(chain, selected.Lsn, outcomes).Any(r => r.TransactionId is not null && adrReverts.Contains(r.TransactionId)))
+            return Fail("ADR revert in the chain, not replayed");
 
         // Une transaction annulée qui a défait un point de sauvegarde avant l'enregistrement choisi : ce qu'elle a défait serait rejoué comme s'il tenait (§7.3).
         if (OutcomeOf(selected) == TxOutcome.RolledBack && selected.TransactionId is not null
@@ -83,6 +84,21 @@ public static class RowReplayer
         var precise = new[] { forward, backward }.OfType<Failure>().FirstOrDefault(x => x.Specific);
         if (precise is not null) return Fail(precise.Status);
         return Fail(rolledBack ? "rollback in the chain, rebuild forwards only" : NoImage);
+    }
+
+    /// <summary>La vie de la clé qui contient l'enregistrement lsn de chain (spec03 §7.4) : un delete la termine, l'enregistrement suivant en
+    /// ouvre une autre. Le delete d'une transaction annulée ne sépare rien, son effet net est nul. Vide si lsn n'est pas dans chain.</summary>
+    public static IReadOnlyList<LogRecord> Life(IReadOnlyList<LogRecord> chain, string lsn, IReadOnlyDictionary<string, TxOutcome> outcomes)
+    {
+        bool Ends(LogRecord r) => r.Operation == Delete
+            && !(r.TransactionId is not null && outcomes.TryGetValue(r.TransactionId, out var o) && o == TxOutcome.RolledBack);
+        var i = chain.ToList().FindIndex(r => r.Lsn == lsn);
+        if (i < 0) return [];
+        var start = i;
+        while (start > 0 && !Ends(chain[start - 1])) start--;
+        var end = i;
+        while (end < chain.Count - 1 && !Ends(chain[end])) end++;
+        return chain.Skip(start).Take(end - start + 1).ToList();
     }
 
     private static ReplayResult Fail(string status) => new(null, null, AnchorKind.None, null, status, false);

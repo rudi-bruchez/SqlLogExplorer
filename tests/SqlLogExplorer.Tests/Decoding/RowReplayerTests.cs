@@ -211,17 +211,37 @@ public class RowReplayerTests(ITestOutputHelper output)
     public void AdrRevertAfterTheSelectedRecord_StopsEveryReplayOfTheRow()
     {
         var outcomes = With(("P", TxOutcome.PartlyRolledBack));
-        // Le delete est après l'enregistrement choisi ; l'enregistrement de la transaction P est encore après (la ligne est réinsérée).
-        var chain = new[] { SetA(2, "B"), GrowB(3, "C"), Delete(4, "D", WithA(AbcdefRow, 0x0B)), Insert(5, "P", SpecRow) };
+        // Le delete est après l'enregistrement choisi ; la révocation P, entre les deux, est dans la même vie de la clé.
+        var chain = new[] { SetA(2, "B"), GrowB(3, "C"), SetA(4, "P", 0x0B, 0x0C), Delete(5, "D", WithA(AbcdefRow, 0x0C)) };
 
         var withRevert = Replay(chain, 3, outcomes, new HashSet<string> { Tx("P") });
-        var withoutRevert = Replay(chain, 3, outcomes);
+        var withoutRevert = Replay(chain, 3, With(("P", TxOutcome.Committed)));
 
         Assert.Null(withRevert.After);
         Assert.Equal("ADR revert in the chain, not replayed", withRevert.Status);
         Assert.Equal(AnchorKind.Delete, withoutRevert.Anchor);
         Assert.Equal(WithA(AbcdefRow, 0x0B), withoutRevert.After);
-        Assert.Equal($"rebuilt backwards from DELETE at LSN {L(4)}", withoutRevert.Status);
+        Assert.Equal($"rebuilt backwards from DELETE at LSN {L(5)}", withoutRevert.Status);
+    }
+
+    // Un delete sépare deux vies de la clé (§7.4) : une révocation dans l'une n'arrête pas le rejeu de l'autre.
+    [Fact]
+    public void AdrRevertInAnotherLifeOfTheKey_DoesNotStopTheReplay()
+    {
+        var outcomes = With(("P", TxOutcome.PartlyRolledBack));
+        var reverts = new HashSet<string> { Tx("P") };
+
+        // Révocation dans la vie suivante : la ligne est réinsérée par P après le delete.
+        var after = new[] { SetA(2, "B"), GrowB(3, "C"), Delete(4, "D", WithA(AbcdefRow, 0x0B)), Insert(5, "P", SpecRow) };
+        var r = Replay(after, 3, outcomes, reverts);
+        Assert.Equal($"rebuilt backwards from DELETE at LSN {L(4)}", r.Status);
+        Assert.Equal(WithA(AbcdefRow, 0x0B), r.After);
+
+        // Révocation dans la vie précédente : la nouvelle vie se rejoue depuis son insert.
+        var before = new[] { Insert(1, "A", SpecRow), SetA(2, "P"), Delete(3, "D", WithA(SpecRow, 0x0B)), Insert(4, "B", SpecRow), GrowB(5, "C") };
+        var f = Replay(before, 5, outcomes, reverts);
+        Assert.Equal($"rebuilt forwards from INSERT at LSN {L(4)}", f.Status);
+        Assert.Equal(AbcdefRow, f.After);
     }
 
     [Fact]

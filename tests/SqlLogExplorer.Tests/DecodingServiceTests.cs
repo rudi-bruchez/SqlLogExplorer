@@ -414,6 +414,41 @@ public class DecodingServiceTests
         Assert.Null((await service.InspectAsync(insert)).Warning);
     }
 
+    // L'avertissement ne vaut que pour l'image d'un delete, et dans la vie de la clé qui tient la révocation (spec03 §7.3, §7.4).
+    [Theory, MemberData(nameof(AdrVersions))]
+    public async Task VersionedAdr_NextLifeOfTheKey_CarriesNoWarning(string version)
+    {
+        var f = FixtureSet.Load(version, "versioned_adr");
+        var (_, records) = f.ForTable("dbo.vr");
+        var delete = records.Single(r => r.Operation == "LOP_DELETE_ROWS");
+        var insert = records.Single(r => r.Operation == "LOP_INSERT_ROWS");
+        // La clé revient après le delete, puis repart : deux enregistrements d'une vie suivante, sans révocation.
+        var again = insert with { Lsn = "FFFFFFFF:00000001:0001", TransactionId = null };
+        var gone = delete with { Lsn = "FFFFFFFF:00000001:0002", TransactionId = null };
+        await using var cache = await CacheAsync(f.Log, [again, gone]);
+        var service = new DecodingService(cache, Lookup(f), false);
+
+        Assert.Equal("may hold values undone by a partial rollback", (await service.InspectAsync(delete)).Warning);
+        Assert.Null((await service.InspectAsync(again)).Warning);
+        Assert.Null((await service.InspectAsync(gone)).Warning);
+    }
+
+    [Theory, MemberData(nameof(AdrVersions))]
+    public async Task VersionedAdr_AnInsertAfterTheRevert_CarriesNoWarning(string version)
+    {
+        // Une ligne déplacée par un fractionnement est journalisée comme un insert (spec03 §2) : dans la même vie, après la révocation.
+        // L'avertissement vise l'image d'un delete, pas celle d'un insert.
+        var f = FixtureSet.Load(version, "versioned_adr");
+        var (_, records) = f.ForTable("dbo.vr");
+        var insert = records.Single(r => r.Operation == "LOP_INSERT_ROWS");
+        var lastModify = records.Last(r => r.Operation is "LOP_MODIFY_ROW" or "LOP_MODIFY_COLUMNS");
+        var moved = insert with { Lsn = lastModify.Lsn[..^4] + "FFFF", TransactionId = null };
+        Assert.DoesNotContain(f.Log, r => r.Lsn == moved.Lsn);
+        await using var cache = await CacheAsync(f.Log, [moved]);
+
+        Assert.Null((await new DecodingService(cache, Lookup(f), false).InspectAsync(moved)).Warning);
+    }
+
     [Theory, MemberData(nameof(Versions))]
     public async Task PlainDelete_HasNoWarning(string version)
     {

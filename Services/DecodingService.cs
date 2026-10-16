@@ -62,11 +62,12 @@ public sealed class DecodingService
             var label = own.Any(r => r.Operation == "LOP_BEGIN_XACT" && r.TransactionName is not null && SystemTransactions.Contains(r.TransactionName))
                 ? "row moved by the engine" : null;
             string? warning = null;
-            if (data is not null && await ChainAsync(record, data, ct) is { } c)
+            if (record.Operation == Delete && data is not null && await ChainAsync(record, data, ct) is { } c)
             {
-                // Une révocation ADR avant l'image : ses octets annulés sont restés dans la page (spec03 §7.3).
+                // Une révocation ADR avant l'image du delete, dans la même vie de la clé : ses octets annulés sont restés dans la page (spec03 §7.3, §7.4).
                 var reverts = RowReplayer.AdrReverts(c.Transactions);
-                if (c.Records.Any(r => string.CompareOrdinal(r.Lsn, record.Lsn) < 0 && r.TransactionId is not null && reverts.Contains(r.TransactionId)))
+                if (RowReplayer.Life(c.Records, record.Lsn, RowReplayer.Classify(c.Transactions))
+                    .Any(r => string.CompareOrdinal(r.Lsn, record.Lsn) < 0 && r.TransactionId is not null && reverts.Contains(r.TransactionId)))
                     warning = "may hold values undone by a partial rollback";
             }
             return new Inspection(record, row, null, null, [], null, outcome, false, schemaMessage, label, warning, false);
