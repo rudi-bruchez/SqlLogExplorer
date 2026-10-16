@@ -8,7 +8,7 @@ It is written for DBAs, for three uses:
 - Audit: what an `UPDATE` changed, column by column, before and after.
 - Learning the log format: an annotated hexdump colors each byte of a row image by its role (status bits, fixed data, null bitmap, offset array, variable data) and names the column and value it belongs to.
 
-Version 0.1.0 is a preview. The log format is undocumented: every layout the decoder relies on was measured on SQL Server 2017, 2019, 2022 and 2025. When a reconstruction cannot be proven, the application refuses it with a message instead of showing a row that might be wrong.
+SqlLogExplorer is a preview. The log format is undocumented: every layout the decoder relies on was measured on SQL Server 2017, 2019, 2022 and 2025. When a reconstruction cannot be proven, the application refuses it with a message instead of showing a row that might be wrong.
 
 ## Documentation
 
@@ -23,8 +23,8 @@ Releases are published on the [GitHub Releases page](https://github.com/rudi-bru
 Each release also carries `sqllogexplorer_<version>_checksums.txt`, the SHA-256 sums of the archives. Download it next to the archive, then check the archive:
 
 ```sh
-sha256sum -c --ignore-missing sqllogexplorer_0.1.0_checksums.txt          # Linux
-shasum -a 256 -c --ignore-missing sqllogexplorer_0.1.0_checksums.txt      # macOS
+sha256sum -c --ignore-missing sqllogexplorer_0.2.0_checksums.txt          # Linux
+shasum -a 256 -c --ignore-missing sqllogexplorer_0.2.0_checksums.txt      # macOS
 ```
 
 On Windows, the output of `(Get-FileHash <archive> -Algorithm SHA256).Hash` in PowerShell must match the line of that archive in the checksums file (case aside).

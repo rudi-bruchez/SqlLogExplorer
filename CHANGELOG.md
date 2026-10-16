@@ -4,11 +4,21 @@ All notable changes to this project are documented in this file. The format foll
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-16
+
+Following the log by transaction, by table and by page. The `Records` tab now lists the transactions of the imported log with their begin and end times and outcome, and shows the operations of the one you select. A search by object or by page restricts both the list and the grid, to answer what happened to a table or to a page.
+
 ### Added
 
 - A transaction list on the left of the `Records` tab, with each transaction's begin and end time, outcome (`Committed`, `Rolled back` or `Open`), number of records and name. Selecting a transaction shows only its records in the grid; `Show all records` clears it.
 - A search by object and by page above the list. `Object` matches part of the `AllocUnitName`; `Page` takes `file:page` in decimal (`1:336`, as `DBCC PAGE` takes it) or in the `fn_dblog` form (`0001:00000150`). Both the transaction list and the grid follow the search.
 - The import now reads the `Begin Time` and `End Time` columns of `fn_dblog` and `fn_dump_dblog`.
+
+### Limits
+
+- An offline import has no `AllocUnitName`, so the object search finds nothing there; the page search works.
+- The page search follows the `Page ID` column only: the allocation pages (PFS, GAM, IAM) updated when a page is allocated do not appear.
+- The times are shown as SQL Server returns them, in the local time of the server. A transaction that began before the imported part of the log has no begin time and no name.
 
 ## [0.1.1] - 2026-10-16
 
@@ -40,6 +50,7 @@ First release. SqlLogExplorer reads the transaction log of a SQL Server database
 - Importing with `fn_dblog` and reading the current row with `DBCC PAGE` require `sysadmin`. Reading the current row also requires a clustered table without ADR, and it holds a SERIALIZABLE transaction on the analyzed database for a few hundred milliseconds.
 - Raw `.ldf` files are not read.
 
-[Unreleased]: https://github.com/rudi-bruchez/SqlLogExplorer/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/rudi-bruchez/SqlLogExplorer/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/rudi-bruchez/SqlLogExplorer/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/rudi-bruchez/SqlLogExplorer/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/rudi-bruchez/SqlLogExplorer/releases/tag/v0.1.0
