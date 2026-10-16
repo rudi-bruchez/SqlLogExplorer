@@ -1,0 +1,118 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to build (must already exist)'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+          fetch-depth: 0
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: '10.0.x'
+
+      # The tag and the csproj must agree, or the binaries would report a version
+      # nobody can find in the repository.
+      - name: Check the tag matches the csproj
+        env:
+          # Bound through env rather than interpolated: ${{ }} is expanded before bash
+          # parses the line, so an input holding shell metacharacters would become script.
+          RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          set -eu
+          tag="$RELEASE_TAG"
+          file="v$(sed -n 's|.*<Version>\(.*\)</Version>.*|\1|p' SqlLogExplorer.csproj | tr -d '[:space:]')"
+          if [ "$tag" != "$file" ]; then
+            echo "tag $tag does not match SqlLogExplorer.csproj ($file)"; exit 1
+          fi
+          echo "version=${tag#v}" >> "$GITHUB_ENV"
+
+      # The changelog section is the release note. Built right after the tag check, so a
+      # tag whose section is missing fails early; written outside the checkout.
+      - name: Notes
+        run: |
+          set -eu
+          scripts/release-notes.sh "$version" "$GITHUB_REPOSITORY" \
+            "sqllogexplorer_${version}_checksums.txt" > "$RUNNER_TEMP/notes.md"
+          cat "$RUNNER_TEMP/notes.md"
+
+      # Integration tests skip here: they need SQLLOGEXPLORER_RUN_INTEGRATION=1 and a
+      # SQL Server container, which the runner does not have.
+      - name: Test
+        run: dotnet test tests/SqlLogExplorer.Tests --configuration Release
+
+      # One runner publishes every RID (ReadyToRun off). Self-contained folder, not
+      # single-file: SQLite, Skia and HarfBuzz are native libraries loaded next to the
+      # managed assemblies.
+      - name: Build
+        run: |
+          set -eu
+          mkdir -p dist
+          for target in linux/x64 linux/arm64 osx/x64 osx/arm64 win/x64; do
+            os="${target%/*}"; arch="${target#*/}"
+            name="sqllogexplorer_${version}_${os}_${arch}"
+            stage="staging/${name}"
+            echo "building $name"
+            dotnet publish SqlLogExplorer.csproj \
+              --configuration Release \
+              --runtime "${os}-${arch}" \
+              --self-contained true \
+              -p:PublishReadyToRun=false \
+              --output "$stage" \
+              --nologo --verbosity quiet
+            rm -f "$stage"/*.pdb
+            cp LICENSE README.md CHANGELOG.md "$stage/"
+            if [ "$os" = "win" ]; then
+              (cd staging && zip -qr "../dist/${name}.zip" "$name")
+            else
+              chmod +x "$stage/SqlLogExplorer"
+              tar czf "dist/${name}.tar.gz" -C staging "$name"
+            fi
+          done
+          (cd dist && sha256sum * > "sqllogexplorer_${version}_checksums.txt")
+          ls -lh dist
+
+      # The app is a window, so the archive is checked for what a cross-published build
+      # can get wrong: the apphost and the native libraries it loads.
+      - name: Verify the archives
+        run: |
+          set -eu
+          check() { test -f "staging/sqllogexplorer_${version}_$1/$2" || { echo "missing $1/$2"; exit 1; }; }
+          for t in linux_x64 linux_arm64; do
+            for f in SqlLogExplorer libe_sqlite3.so libSkiaSharp.so libHarfBuzzSharp.so; do check "$t" "$f"; done
+          done
+          for t in osx_x64 osx_arm64; do
+            for f in SqlLogExplorer libe_sqlite3.dylib libSkiaSharp.dylib libHarfBuzzSharp.dylib; do check "$t" "$f"; done
+          done
+          for f in SqlLogExplorer.exe e_sqlite3.dll libSkiaSharp.dll libHarfBuzzSharp.dll Microsoft.Data.SqlClient.SNI.dll; do check win_x64 "$f"; done
+          echo "archives verified"
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          set -eu
+          tag="$RELEASE_TAG"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" dist/* --clobber
+            gh release edit "$tag" --notes-file "$RUNNER_TEMP/notes.md"
+          else
+            gh release create "$tag" dist/* \
+              --title "$tag" \
+              --notes-file "$RUNNER_TEMP/notes.md" \
+              --prerelease
+          fi
