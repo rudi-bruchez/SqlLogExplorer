@@ -269,42 +269,51 @@ public sealed class DecodingService
         _ => Convert.ToString(value, CultureInfo.InvariantCulture),
     };
 
-    /// <summary>Sans ligne complète (spec03 §6.1) : un fragment tout entier dans une colonne fixe ou dans un octet de bits nomme la colonne ;
-    /// il en donne les valeurs quand il la couvre entière (pour un octet de bits, les bits qui ont changé).</summary>
-    private static IReadOnlyList<ColumnChange> FragmentChanges(LogRecord record, TableSchema schema)
+    private const string FromFragment = "from the fragment alone, NULL state unknown";
+
+    /// <summary>Sans ligne complète (spec03 §6.1) : un fragment tout entier dans une colonne fixe ou sur un octet de bits nomme la colonne.
+    /// Il en donne les valeurs seulement quand l'avant et l'après couvrent exactement ses octets (un octet de chaque côté pour un octet
+    /// de bits, et alors les seuls bits qui ont changé), avec une note : sans la ligne, le bitmap de NULL peut les démentir.</summary>
+    internal static IReadOnlyList<ColumnChange> FragmentChanges(LogRecord record, TableSchema schema)
     {
         var changes = new List<ColumnChange>();
+        var fixedColumns = schema.Columns.Where(c => c.IsFixed && !c.IsDropped).ToList();
         foreach (var f in ModifyDecoder.Decode(record) ?? [])
         {
             // Une compensation ne journalise pas l'avant : la longueur remplacée tient lieu.
             var length = f.Before.Length > 0 ? f.Before.Length : f.ForwardLength;
             if (length == 0) continue;
-            var fixedColumns = schema.Columns.Where(c => c.IsFixed && !c.IsDropped).ToList();
 
             var bits = fixedColumns.Where(c => c.IsBit && c.LeafOffset == f.Offset).ToList();
             if (bits.Count > 0)
             {
-                if (length != 1) continue;
+                // L'octet est touché sans qu'on sache lequel de ses bits a changé.
+                if (f.Before.Length != 1 || f.After.Length != 1)
+                {
+                    changes.AddRange(bits.Select(c => new ColumnChange(c.Name, null, null, null)));
+                    continue;
+                }
                 foreach (var c in bits)
                 {
-                    bool? b = f.Before.Length == 1 ? (f.Before[0] >> c.LeafBitPosition & 1) == 1 : null;
-                    bool? a = f.After.Length == 1 ? (f.After[0] >> c.LeafBitPosition & 1) == 1 : null;
-                    if (b is not null && b == a) continue;
-                    changes.Add(new ColumnChange(c.Name, b, a, true));
+                    var b = (f.Before[0] >> c.LeafBitPosition & 1) == 1;
+                    var a = (f.After[0] >> c.LeafBitPosition & 1) == 1;
+                    if (b != a) changes.Add(new ColumnChange(c.Name, FragmentValue(b), FragmentValue(a), true));
                 }
                 continue;
             }
 
             var column = fixedColumns.FirstOrDefault(c => !c.IsBit && c.LeafOffset <= f.Offset && f.Offset + length <= c.LeafOffset + c.MaxInrowLength);
             if (column is null) continue;
-            var whole = f.Offset == column.LeafOffset && length == column.MaxInrowLength;
+            var exact = f.Offset == column.LeafOffset && f.Before.Length == column.MaxInrowLength && f.After.Length == column.MaxInrowLength;
             changes.Add(new ColumnChange(column.Name,
-                whole && f.Before.Length == length ? SafeValue(column, f.Before) : null,
-                whole && f.After.Length == length ? SafeValue(column, f.After) : null,
+                exact ? FragmentValue(SafeValue(column, f.Before)) : null,
+                exact ? FragmentValue(SafeValue(column, f.After)) : null,
                 true));
         }
         return changes;
     }
+
+    private static NotedValue? FragmentValue(object? value) => value is null ? null : new NotedValue(value, true, FromFragment);
 
     private static object? SafeValue(SchemaColumn c, byte[] bytes)
     {

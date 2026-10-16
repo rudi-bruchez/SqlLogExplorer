@@ -539,7 +539,43 @@ public class DecodingServiceTests
 
         Assert.Equal(NoImage, x.ReplayStatus);
         var change = Assert.Single(x.Changes);
-        Assert.Equal(new ColumnChange("d", false, true, true), change);
+        Assert.Equal(new ColumnChange("d", new NotedValue(false, true, FromFragment), new NotedValue(true, true, FromFragment), true), change);
+    }
+
+    // ---- Fragment seul (spec03 §6.1) : sans ligne complète, le bitmap de NULL est inconnu ----
+
+    private const string FromFragment = "from the fragment alone, NULL state unknown";
+
+    // spec03 §2 : t(id int, a int, b varchar(20), c bit, d bit), c et d dans l'octet 12.
+    private static readonly TableSchema T = new(1, "dbo", "t", 1, 1, new[]
+    {
+        Decoding.TableSchemaTests.Col(1, "id", 4, 1, 56, 4, keyOrdinal: 1), Decoding.TableSchemaTests.Col(2, "a", 8, 2, 56, 4),
+        Decoding.TableSchemaTests.Col(3, "b", -1, 3, 167, 20) with { CodePage = 1252 },
+        Decoding.TableSchemaTests.Col(4, "c", 12, 4, 104, 1, bitPos: 0), Decoding.TableSchemaTests.Col(5, "d", 12, 5, 104, 1, bitPos: 1),
+    });
+
+    private static LogRecord ModifyRow(int offset, string before, string after) =>
+        new("00000001:00000001:0001", "LOP_MODIFY_ROW", "LCX_CLUSTERED", "0000:00000001", null, Convert.FromHexString(before), Convert.FromHexString(after))
+        { OffsetInRow = offset };
+
+    [Fact]
+    public void Fragment_CoveringExactlyAColumn_GivesItsValues_WithTheirNote()
+    {
+        var a = Assert.Single(DecodingService.FragmentChanges(ModifyRow(8, "0A000000", "0B000000"), T));
+
+        Assert.Equal(new ColumnChange("a", new NotedValue(10, true, FromFragment), new NotedValue(11, true, FromFragment), true), a);
+    }
+
+    [Theory]
+    [InlineData(8, "0A000000", "0B0000000000")]   // fragment qui grandit sur un int
+    [InlineData(12, "01", "0300")]                 // fragment qui grandit sur l'octet de bits
+    [InlineData(12, "0102", "03")]                 // fragment qui rétrécit sur l'octet de bits
+    public void Fragment_NotCoveringExactlyAColumnOnBothSides_NamesItWithoutValues(int offset, string before, string after)
+    {
+        var changes = DecodingService.FragmentChanges(ModifyRow(offset, before, after), T);
+
+        Assert.NotEmpty(changes);
+        Assert.All(changes, c => { Assert.Null(c.Before); Assert.Null(c.After); });
     }
 
     [Theory, MemberData(nameof(Versions))]
