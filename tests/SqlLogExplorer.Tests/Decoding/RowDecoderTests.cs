@@ -229,7 +229,7 @@ public class RowDecoderTests
         Assert.Equal(1, V(row, "id"));
         foreach (var (column, expected) in TypeDecoderTests.FirstRow)
         {
-            var actual = V(row, column);
+            var actual = V(row, column) is SqlTemporal t ? t.Value : V(row, column);
             Assert.True(expected.Equals(actual) || (expected is byte[] e && actual is byte[] a && e.SequenceEqual(a)),
                 $"{version} {column} : attendu {expected}, obtenu {actual}");
         }

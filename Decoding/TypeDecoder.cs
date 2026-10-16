@@ -1,9 +1,18 @@
 using System;
 using System.Buffers.Binary;
 using System.Data.SqlTypes;
+using System.Globalization;
 using System.Text;
 
 namespace SqlLogExplorer.Decoding;
+
+/// <summary>Valeur temporelle décodée (date, time, datetime, smalldatetime, datetime2, datetimeoffset) et son texte, celui que SQL Server
+/// affiche : ISO, fraction à l'échelle de la colonne. Le texte sert à l'affichage comme à la comparaison : le type .NET seul ne dit
+/// ni l'échelle ni le type SQL (datetime, datetime2 et smalldatetime donnent tous un DateTime).</summary>
+public sealed record SqlTemporal(object Value, string Text)
+{
+    public override string ToString() => Text;
+}
 
 /// <summary>Octets d'une colonne vers une valeur .NET, selon le format disque de SQL Server (spec03 §1.1, §4).</summary>
 public static class TypeDecoder
@@ -22,7 +31,8 @@ public static class TypeDecoder
         CheckLength(c, b.Length);
         try
         {
-            return DecodeValue(c, b);
+            var value = DecodeValue(c, b);
+            return c.SystemTypeId is 40 or 41 or 42 or 43 or 58 or 61 ? new SqlTemporal(value!, TemporalText(c, value!)) : value;
         }
         catch (Exception e) when (e is OverflowException or NotSupportedException)
         {
@@ -82,6 +92,23 @@ public static class TypeDecoder
         173 or 165 => b.ToArray(),
         _ => b.ToArray(),
     };
+
+    private static string TemporalText(SchemaColumn c, object value)
+    {
+        var fraction = c.Scale == 0 ? "" : "." + new string('f', c.Scale);
+        return value switch
+        {
+            DateOnly d => d.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+            TimeOnly t => t.ToString("HH:mm:ss" + fraction, CultureInfo.InvariantCulture),
+            DateTimeOffset o => o.ToString("yyyy-MM-dd HH:mm:ss" + fraction + " zzz", CultureInfo.InvariantCulture),
+            // datetime : des 1/300 s, que SQL Server montre arrondies à la milliseconde (.997 pour 299/300) ; jamais 1000, 299/300 donne 997.
+            DateTime d when c.SystemTypeId == 61 => d.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture)
+                + "." + ((int)Math.Round(d.Ticks % TimeSpan.TicksPerSecond / (double)TimeSpan.TicksPerMillisecond)).ToString("000", CultureInfo.InvariantCulture),
+            DateTime d when c.SystemTypeId == 58 => d.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture),
+            DateTime d => d.ToString("yyyy-MM-dd HH:mm:ss" + fraction, CultureInfo.InvariantCulture),
+            _ => Convert.ToString(value, CultureInfo.InvariantCulture) ?? "",
+        };
+    }
 
     // decimal/numeric : 1 octet de signe (1 = positif), puis l'entier non signé sur 4, 8, 12 ou 16 octets.
     private static SqlDecimal Decimal(SchemaColumn c, ReadOnlySpan<byte> b)

@@ -226,7 +226,7 @@ public sealed class DecodingService
     }
 
     /// <summary>Colonne par colonne, par nom ; valeurs comparées en texte invariant, pour qu'un défaut lu au catalogue ("7") égale l'entier 7.</summary>
-    private static IReadOnlyList<ColumnChange> Compare(DecodedRow before, DecodedRow after)
+    internal static IReadOnlyList<ColumnChange> Compare(DecodedRow before, DecodedRow after)
     {
         var afterByName = after.Columns.ToDictionary(c => c.Name);
         var changes = new List<ColumnChange>();

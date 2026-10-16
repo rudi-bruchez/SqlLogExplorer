@@ -174,6 +174,7 @@ public sealed partial class CurrentRowReader
     private static SqlParameter Parameter(string name, SchemaColumn c, object value)
     {
         var p = new SqlParameter { ParameterName = name };
+        if (value is SqlTemporal t) value = t.Value;   // le paramètre porte la valeur .NET, son texte ne sert qu'à l'affichage
         (p.SqlDbType, p.Value) = c.SystemTypeId switch
         {
             48 => (SqlDbType.TinyInt, value),

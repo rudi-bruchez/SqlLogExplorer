@@ -6,9 +6,12 @@ namespace SqlLogExplorer.Tests.Decoding;
 
 public class TypeDecoderTests
 {
+    // Une valeur temporelle est rendue avec son texte (SqlTemporal) : ces tests en vérifient la valeur .NET.
     private static object? D(int type, string hex, int precision = 0, int scale = 0, int? codePage = null)
-        => TypeDecoder.Decode(Col(1, "c", 4, 1, type, hex.Length / 2) with { Precision = precision, Scale = scale, CodePage = codePage },
-                              Convert.FromHexString(hex));
+        => Unwrap(TypeDecoder.Decode(Col(1, "c", 4, 1, type, hex.Length / 2) with { Precision = precision, Scale = scale, CodePage = codePage },
+                              Convert.FromHexString(hex)));
+
+    private static object? Unwrap(object? value) => value is SqlTemporal t ? t.Value : value;
 
     [Fact] public void Int() => Assert.Equal(10, D(56, "0A000000"));
     [Fact] public void NegativeSmallint() => Assert.Equal((short)-12345, D(52, "C7CF"));
@@ -101,7 +104,7 @@ public class TypeDecoderTests
         foreach (var (column, expected) in FirstRow)
         {
             var c = schema.Columns.Single(x => x.Name == column);
-            var actual = TypeDecoder.Decode(c, row.AsSpan(c.LeafOffset, c.MaxInrowLength));
+            var actual = Unwrap(TypeDecoder.Decode(c, row.AsSpan(c.LeafOffset, c.MaxInrowLength)));
             Assert.True(expected.Equals(actual) || (expected is byte[] e && actual is byte[] a && e.SequenceEqual(a)),
                 $"{version} {column} : attendu {expected}, obtenu {actual}");
         }
