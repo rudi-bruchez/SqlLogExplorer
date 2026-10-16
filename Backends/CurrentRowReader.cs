@@ -24,6 +24,7 @@ public sealed partial class CurrentRowReader
     public const string Truncated = "log truncated since the import, re-import to use the current row";
     public const string Deleted = "row deleted since: the DELETE anchor applies";
     public const string NotSendable = "key value cannot be sent in the database code page";
+    public const string Rebuilt = "table rebuilt since this record, the current row is not comparable";
 
     private readonly string _connectionString;
     private int? _databaseCodePage;
@@ -103,7 +104,7 @@ public sealed partial class CurrentRowReader
         if (!await acceptSuffix(suffix, ct)) return new CurrentRowResult(null, Deleted);
 
         // 4. La page de chaque adresse, ligne toujours tenue.
-        var dumps = new List<(int Slot, List<(string ParentObject, string Value)> Lines)>();
+        var dumps = new List<(int Slot, long? AllocUnitId, List<(string ParentObject, string Value)> Lines)>();
         foreach (var (file, page, slot) in addresses)
         {
             try
@@ -113,17 +114,26 @@ public sealed partial class CurrentRowReader
                 // DBCC PAGE refuse un appel de fonction en argument (DB_NAME() : erreur de syntaxe, mesuré sur 2022) ; une variable passe.
                 dbcc.CommandText = $"DECLARE @db sysname = DB_NAME(); DBCC PAGE (@db, {file}, {page}, 1) WITH TABLERESULTS;";
                 var lines = new List<(string, string)>();
+                long? allocUnitId = null;
                 await using var r = await dbcc.ExecuteReaderAsync(ct);
                 while (await r.ReadAsync(ct))
-                    lines.Add((r["ParentObject"] as string ?? "", r["VALUE"] as string ?? ""));
-                dumps.Add((slot, lines));
+                {
+                    var value = r["VALUE"] as string ?? "";
+                    // En-tête de page : l'unité d'allocation qui possède la page (mesuré sur 2022).
+                    if (r["Field"] as string == "Metadata: AllocUnitId" && long.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out var au))
+                        allocUnitId = au;
+                    lines.Add((r["ParentObject"] as string ?? "", value));
+                }
+                dumps.Add((slot, allocUnitId, lines));
             }
             catch (SqlException e) { throw StepFailed("page read", e); }
         }
 
-        // 5. Commit, puis garder l'enregistrement primaire dont la clé est celle de la ligne.
+        // 5. Commit, puis garder l'enregistrement primaire dont la clé est celle de la ligne. Une page d'une autre unité d'allocation
+        // (index reconstruit, table reconstruite ou recréée) : la chaîne rejouée, prise sur l'ancienne, ne contient pas ses modifications.
         await tx.CommitAsync(ct);
-        foreach (var (slot, lines) in dumps)
+        if (dumps.Any(d => d.AllocUnitId != schema.AllocUnitId)) return new CurrentRowResult(null, Rebuilt);
+        foreach (var (slot, _, lines) in dumps)
         {
             var row = ParseSlotDump(lines, slot);
             if (row is null || row.Length == 0 || (row[0] >> 1 & 7) != 0) continue;

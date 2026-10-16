@@ -139,6 +139,44 @@ public class CurrentRowReaderIntegrationTests
         Assert.Equal("id=1, a=11", Values(x.After));
     }
 
+    // Une autre unité d'allocation porte maintenant la clé : la suite du journal choisie sur l'ancienne n'en défait pas les modifications.
+    private const string Rebuilt = "table rebuilt since this record, the current row is not comparable";
+
+    [IntegrationFact]
+    public async Task AnIndexOrTableRebuildSinceTheRecord_IsRefused()
+    {
+        await using var db = await Database.CreateAsync();
+        foreach (var (table, rebuild) in new[] { ("dbo.t1", "ALTER INDEX ALL ON dbo.t1 REBUILD;"), ("dbo.t2", "ALTER TABLE dbo.t2 REBUILD;") })
+        {
+            await db.ExecAsync($"CREATE TABLE {table}(id int NOT NULL PRIMARY KEY, a int NULL, b varchar(20) NULL); INSERT {table} VALUES (1, 10, 'abc');");
+            await using var s = await ImportAfterInsertAsync(db, table, $"UPDATE {table} SET a = 11 WHERE id = 1;");
+            Assert.True((await s.Service.InspectAsync(s.Selected)).CanRebuildFromCurrentRow);
+
+            await db.ExecAsync($"{rebuild} UPDATE {table} SET b = 'zzzz' WHERE id = 1;");
+            var x = await s.Service.RebuildFromCurrentRowAsync(s.Selected, new CurrentRowReader(db.ConnectionString));
+
+            Assert.Equal(Rebuilt, x.ReplayStatus);
+            Assert.Null(x.Before);
+            Assert.Null(x.After);
+        }
+    }
+
+    [IntegrationFact]
+    public async Task ATableDroppedAndRecreatedSinceTheRecord_IsRefused()
+    {
+        await using var db = await Database.CreateAsync();
+        await db.ExecAsync("CREATE TABLE dbo.t(id int NOT NULL PRIMARY KEY, a int NULL, b varchar(20) NULL); INSERT dbo.t VALUES (1, 10, 'abc');");
+        await using var s = await ImportAfterInsertAsync(db, "dbo.t", "UPDATE dbo.t SET a = 11 WHERE id = 1;");
+        Assert.True((await s.Service.InspectAsync(s.Selected)).CanRebuildFromCurrentRow);
+
+        await db.ExecAsync("DROP TABLE dbo.t; CREATE TABLE dbo.t(id int NOT NULL PRIMARY KEY, a int NULL, b varchar(20) NULL); INSERT dbo.t VALUES (1, 11, 'other');");
+        var x = await s.Service.RebuildFromCurrentRowAsync(s.Selected, new CurrentRowReader(db.ConnectionString));
+
+        Assert.Equal(Rebuilt, x.ReplayStatus);
+        Assert.Null(x.Before);
+        Assert.Null(x.After);
+    }
+
     [IntegrationFact]
     public async Task TheRowIsHeldFromTheSeek_WhileTheSuffixIsAccepted()
     {
