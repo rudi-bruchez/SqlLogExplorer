@@ -25,6 +25,7 @@ public sealed partial class CurrentRowReader
     public const string Deleted = "row deleted since: the DELETE anchor applies";
     public const string NotSendable = "key value cannot be sent in the database code page";
     public const string Rebuilt = "table rebuilt since this record, the current row is not comparable";
+    public const string Undecodable = "the current row holds columns that cannot be decoded";
 
     private readonly string _connectionString;
     private int? _databaseCodePage;
@@ -136,8 +137,7 @@ public sealed partial class CurrentRowReader
         if (dumps.Any(d => d.AllocUnitId != schema.AllocUnitId)) return new CurrentRowResult(null, Rebuilt);
         foreach (var (slot, _, lines) in dumps)
         {
-            var row = ParseSlotDump(lines, slot);
-            if (row is not null && KeyMatches(row, schema, key)) return new CurrentRowResult(row, null);
+            if (FromSlot(ParseSlotDump(lines, slot), schema, key) is { } result) return result;
         }
         return new CurrentRowResult(null, NotThisRow);
     }
@@ -227,6 +227,14 @@ public sealed partial class CurrentRowReader
         return (int.Parse(parts[0], CultureInfo.InvariantCulture), int.Parse(parts[1], CultureInfo.InvariantCulture), int.Parse(parts[2], CultureInfo.InvariantCulture));
     }
 
+    /// <summary>Le résultat de l'ancre 3 pour un slot lu, ou null quand il n'est pas la ligne cherchée. La ligne cherchée dont une colonne
+    /// ne se décode pas (éparse) est refusée pour cette raison : « pas cette ligne » serait faux.</summary>
+    internal static CurrentRowResult? FromSlot(byte[]? row, TableSchema schema, IReadOnlyList<(SchemaColumn Column, object? Value)> key)
+    {
+        if (row is null || !KeyMatches(row, schema, key)) return null;
+        return RowDecoder.Decode(row, schema).HasProblem ? new CurrentRowResult(null, Undecodable) : new CurrentRowResult(row, null);
+    }
+
     /// <summary>La ligne lue est un enregistrement primaire (type 0) dont chaque colonne de clé vaut celle de l'enregistrement choisi,
     /// uniqueifier compris (0 pour la première ligne d'une clé). Les valeurs sont comparées sans collation : deux chaînes que la collation
     /// confond restent distinctes, comme leurs octets.</summary>
@@ -235,7 +243,8 @@ public sealed partial class CurrentRowReader
         // Un autre type d'enregistrement n'a pas de colonnes décodées : une clé NULL lui irait.
         if (row.Length == 0 || (row[0] >> 1 & 7) != 0) return false;
         var decoded = RowDecoder.Decode(row, schema);
-        if (decoded.HasProblem) return false;   // un slot mal lu n'a pas de colonnes : une clé NULL lui irait
+        // Un slot mal lu n'a pas de colonnes : une clé NULL lui irait. La note d'une colonne non décodée laisse les colonnes de clé lues.
+        if (decoded.Fields.Any(f => (f.Role == FieldRole.Malformed || f.Problem is not null) && !RowDecoder.IsColumnNote(f))) return false;
         foreach (var (column, value) in key)
         {
             var actual = decoded.Columns.FirstOrDefault(c => c.Name == column.Name)?.Value;

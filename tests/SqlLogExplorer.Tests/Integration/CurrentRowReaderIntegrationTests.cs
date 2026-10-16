@@ -140,6 +140,20 @@ public class CurrentRowReaderIntegrationTests
     }
 
     [IntegrationFact]
+    public async Task ATableWithASparseColumn_SaysTheRowCannotBeDecoded()
+    {
+        // La colonne éparse n'est pas décodée : la ligne trouvée par sa clé n'est pas « une autre ligne ».
+        await using var db = await Database.CreateAsync();
+        await db.ExecAsync("CREATE TABLE dbo.t(id int NOT NULL PRIMARY KEY, a int NULL, s int SPARSE NULL); INSERT dbo.t VALUES (1, 10, 5);");
+        await using var s = await ImportAfterInsertAsync(db, "dbo.t", "UPDATE dbo.t SET a = 11 WHERE id = 1;");
+
+        var x = await s.Service.RebuildFromCurrentRowAsync(s.Selected, new CurrentRowReader(db.ConnectionString));
+
+        Assert.Equal(CurrentRowReader.Undecodable, x.ReplayStatus);
+        Assert.Null(x.After);
+    }
+
+    [IntegrationFact]
     public async Task ADeleteSinceTheImport_GivesTheDeleteAnchor()
     {
         // La ligne supprimée sans retour : la recherche ne trouve rien, la suite porte quand même le delete.

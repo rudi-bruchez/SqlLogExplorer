@@ -28,6 +28,34 @@ public class CurrentRowParsingTests
     }
 
     [Fact]
+    public void ASlotWithASparseColumn_IsUndecodable_NotAnotherRow()
+    {
+        // Ligne réelle de SQL Server 2022 (RowDecoderTests) : (id 1, a 10, s1 et s2 éparses, v 'b1'), clé id.
+        var s = new TableSchema(1, "dbo", "sp", 1, 1, new[]
+        {
+            Col(3, "s1", 0, 0, 56, 4), Col(4, "s2", 0, 0, 56, 4),
+            Col(1, "id", 4, 1, 56, 4, keyOrdinal: 1), Col(2, "a", 8, 2, 56, 4), Col(5, "v", -1, 3, 167, 5) with { CodePage = 1252 },
+        });
+        var id = s.Columns.Single(c => c.Name == "id");
+        var row = Convert.FromHexString("30000C00010000000A000000030000010015006231");
+
+        Assert.Equal(new CurrentRowResult(null, CurrentRowReader.Undecodable), CurrentRowReader.FromSlot(row, s, [(id, 1)]));
+        Assert.Equal("the current row holds columns that cannot be decoded", CurrentRowReader.Undecodable);
+        Assert.Null(CurrentRowReader.FromSlot(row, s, [(id, 2)]));                                       // une autre clé : pas cette ligne
+        Assert.Null(CurrentRowReader.FromSlot(Convert.FromHexString("30000C0001"), s, [(id, 1)]));        // tronquée : pas cette ligne
+    }
+
+    [Fact]
+    public void ASlotWithTheKey_IsTheRow()
+    {
+        var s = new TableSchema(1, "dbo", "n", 1, 1, new[] { Col(1, "k", 4, 1, 56, 4, keyOrdinal: 1), Col(2, "v", 8, 2, 56, 4) });
+        var row = Convert.FromHexString("10000C00070000000100000002000000");
+
+        Assert.Equal(row, CurrentRowReader.FromSlot(row, s, [(s.Columns[0], 7)])!.Row);
+        Assert.Null(CurrentRowReader.FromSlot(null, s, [(s.Columns[0], 7)]));
+    }
+
+    [Fact]
     public void Sendable_InAnUnknownDatabaseCodePage_IsFalse_NotAnException()
     {
         Assert.False(CurrentRowReader.Sendable("abc", 1252, 12345));

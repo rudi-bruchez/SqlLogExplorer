@@ -11,6 +11,14 @@ public static class RowDecoder
     /// <summary>Note d'une colonne absente de la ligne : sa valeur est le défaut du catalogue (ou NULL), pas un refus.</summary>
     public const string AddedAfterRow = "added after the row was written";
 
+    /// <summary>Notes d'une colonne que ce décodeur ne lit pas (éparse, type non décodé, valeur hors ligne) : la ligne, elle, est bien lue.</summary>
+    public const string SparseNotDecoded = "sparse column not decoded";
+    public const string TypeNotDecoded = "type not decoded";
+    public const string OffRowNotFollowed = "off-row value not followed";
+
+    /// <summary>Un problème qui n'est que la note d'une colonne non décodée : les autres colonnes de la ligne restent sûres.</summary>
+    public static bool IsColumnNote(DecodedField f) => f.Column is not null && f.Problem is SparseNotDecoded or TypeNotDecoded or OffRowNotFollowed;
+
     public static DecodedRow Decode(byte[]? row, TableSchema? schema)
     {
         var fields = new List<DecodedField>();
@@ -138,8 +146,8 @@ public static class RowDecoder
         {
             if (!c.IsDropped)
             {
-                columns.Add(new DecodedColumn(c.Name, null, "sparse column not decoded"));
-                fields.Add(new DecodedField(row.Length, 0, FieldRole.Malformed, c.Name, Problem: "sparse column not decoded"));
+                columns.Add(new DecodedColumn(c.Name, null, SparseNotDecoded));
+                fields.Add(new DecodedField(row.Length, 0, FieldRole.Malformed, c.Name, Problem: SparseNotDecoded));
             }
             return;
         }
@@ -181,7 +189,7 @@ public static class RowDecoder
         if (ends[j].OffRow && !isNull(c.LeafNullBit))
         {
             fields.Add(new DecodedField(start, len, FieldRole.LobPointer, c.Name));
-            columns.Add(new DecodedColumn(c.Name, null, "off-row value not followed"));
+            columns.Add(new DecodedColumn(c.Name, null, OffRowNotFollowed));
             return;
         }
         Add(row.AsSpan(start, len), start, FieldRole.VariableColumn);
@@ -196,7 +204,7 @@ public static class RowDecoder
             }
             var (value, problem) = SafeDecode(c, bytes);
             fields.Add(new DecodedField(offset, bytes.Length, problem is null ? role : FieldRole.Malformed, c.Name, value, problem));
-            columns.Add(new DecodedColumn(c.Name, value, problem ?? (TypeDecoder.IsSupported(c.SystemTypeId) ? null : "type not decoded")));
+            columns.Add(new DecodedColumn(c.Name, value, problem ?? (TypeDecoder.IsSupported(c.SystemTypeId) ? null : TypeNotDecoded)));
         }
     }
 
