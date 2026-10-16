@@ -29,7 +29,7 @@
                         IsVisible="{Binding CanConnectSchemaSource}"
                         ToolTip.Tip="Offline: read table schemas from a database to decode the rows"/>
             </StackPanel>
-            <TextBlock Text="Requires sysadmin or VIEW SERVER STATE / db_owner on the target SQL Server."
+            <TextBlock Text="Live import requires sysadmin on the target SQL Server."
                        FontStyle="Italic" Opacity="0.7"/>
             <StackPanel Orientation="Horizontal" Spacing="8">
                 <TextBlock Text="{Binding StatusMessage}" VerticalAlignment="Center"/>
