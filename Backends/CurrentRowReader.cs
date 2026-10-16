@@ -83,7 +83,6 @@ public sealed partial class CurrentRowReader
         }
         catch (SqlException e) when (e.Number == 1222) { return new CurrentRowResult(null, Locked); }
         catch (SqlException e) { throw StepFailed("seek", e); }
-        if (addresses.Count == 0) return new CurrentRowResult(null, NotThisRow);
 
         // 2. La suite du journal depuis le dernier enregistrement du cache ; il doit en être le premier, sinon le journal a été tronqué.
         var suffix = new List<LogRecord>();
@@ -101,7 +100,9 @@ public sealed partial class CurrentRowReader
         if (suffix.Count == 0 || suffix[0].Lsn != Lsn.Normalize(lastCachedLsn)) return new CurrentRowResult(null, Truncated);
 
         // 3. Le cache reçoit la suite ; une suppression de la ligne après l'enregistrement choisi renvoie à l'ancre 2.
+        // Sans adresse, la suite est lue quand même : une ligne supprimée depuis l'import n'est plus là pour la recherche.
         if (!await acceptSuffix(suffix, ct)) return new CurrentRowResult(null, Deleted);
+        if (addresses.Count == 0) return new CurrentRowResult(null, NotThisRow);
 
         // 4. La page de chaque adresse, ligne toujours tenue.
         var dumps = new List<(int Slot, long? AllocUnitId, List<(string ParentObject, string Value)> Lines)>();

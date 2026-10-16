@@ -126,6 +126,22 @@ public class CurrentRowReaderIntegrationTests
     [IntegrationFact]
     public async Task ADeleteSinceTheImport_GivesTheDeleteAnchor()
     {
+        // La ligne supprimée sans retour : la recherche ne trouve rien, la suite porte quand même le delete.
+        await using var db = await Database.CreateAsync();
+        await db.ExecAsync("CREATE TABLE dbo.t(id int NOT NULL PRIMARY KEY, a int NULL); INSERT dbo.t VALUES (1, 10);");
+        await using var s = await ImportAfterInsertAsync(db, "dbo.t", "UPDATE dbo.t SET a = 11 WHERE id = 1;");
+        await db.ExecAsync("DELETE dbo.t WHERE id = 1;");
+
+        var x = await s.Service.RebuildFromCurrentRowAsync(s.Selected, new CurrentRowReader(db.ConnectionString));
+
+        Assert.StartsWith("rebuilt backwards from DELETE", x.ReplayStatus);
+        Assert.Equal("id=1, a=10", Values(x.Before));
+        Assert.Equal("id=1, a=11", Values(x.After));
+    }
+
+    [IntegrationFact]
+    public async Task ADeleteAndReinsertSinceTheImport_GivesTheDeleteAnchor()
+    {
         // La clé supprimée puis insérée de nouveau : la recherche trouve la nouvelle vie, la suite porte le delete de l'ancienne.
         await using var db = await Database.CreateAsync();
         await db.ExecAsync("CREATE TABLE dbo.t(id int NOT NULL PRIMARY KEY, a int NULL); INSERT dbo.t VALUES (1, 10);");
