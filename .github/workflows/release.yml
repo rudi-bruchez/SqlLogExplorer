@@ -113,6 +113,5 @@ jobs:
           else
             gh release create "$tag" dist/* \
               --title "$tag" \
-              --notes-file "$RUNNER_TEMP/notes.md" \
-              --prerelease
+              --notes-file "$RUNNER_TEMP/notes.md"
           fi
