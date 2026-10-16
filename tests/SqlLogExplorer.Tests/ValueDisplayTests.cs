@@ -64,9 +64,69 @@ public class ValueDisplayTests
         var after = Row(2000000, 1);   // 0,1 s de plus ; 3 ms de plus pour le datetime
         Assert.False(before.HasProblem);
 
-        var changes = DecodingService.Compare(before, after);
+        var changes = DecodingService.Compare(before, after, null, null);
 
-        Assert.Equal(["t7", "d2", "dto", "dt"], changes.Where(c => c.Changed).Select(c => c.Column));
+        Assert.Equal(["t7", "d2", "dto", "dt"], changes.Where(c => c.Changed == true).Select(c => c.Column));
         Assert.All(changes.Where(c => c.Column != "id"), c => Assert.NotEqual(InspectorViewModel.ValueText(c.Before), InspectorViewModel.ValueText(c.After)));
+    }
+
+    // ---- Notes de colonne (spec03 §1.2) : une valeur non lue n'est ni NULL ni une cellule vide ----
+
+    private static readonly TableSchema Lob = new(1, "dbo", "o", 1, 1, new[] { Col(1, "id", 4, 1, 56, 4, keyOrdinal: 1), Col(2, "m", -1, 2, 167, 8000) });
+
+    // Pointeur hors ligne de 24 octets, fin 0x27 | 0x8000 ; le dernier octet distingue deux pointeurs.
+    private static byte[] LobRow(string last) => Convert.FromHexString("30000800010000000200000100" + "2780" + new string('0', 46) + last);
+
+    [Fact]
+    public void TwoDifferentOffRowPointers_AreAChange_ShownAsTheirNote()
+    {
+        var change = DecodingService.Compare(RowDecoder.Decode(LobRow("01"), Lob), RowDecoder.Decode(LobRow("02"), Lob), LobRow("01"), LobRow("02"))
+            .Single(c => c.Column == "m");
+
+        Assert.True(change.Changed);
+        Assert.Equal("(off-row value not followed)", InspectorViewModel.ValueText(change.Before));
+        Assert.Equal("(off-row value not followed)", InspectorViewModel.ValueText(change.After));
+    }
+
+    [Fact]
+    public void TheSameOffRowPointer_IsNotKnownToBeUnchanged()
+    {
+        var row = RowDecoder.Decode(LobRow("01"), Lob);
+
+        var changes = DecodingService.Compare(row, row, LobRow("01"), LobRow("01"));
+
+        Assert.Null(changes.Single(c => c.Column == "m").Changed);
+        Assert.False(changes.Single(c => c.Column == "id").Changed);
+    }
+
+    [Fact]
+    public void AColumnAddedAfterTheRow_ShowsItsDefaultWithItsNote()
+    {
+        var s = new TableSchema(1, "dbo", "ac", 1, 1, new[]
+        {
+            Col(1, "id", 4, 1, 56, 4), Col(2, "a", 8, 2, 56, 4),
+            Col(3, "n", 12, 3, 56, 4) with { HasDefault = true, DefaultValue = "7", IsNullable = false },
+        });
+        var before = Convert.FromHexString("10000C00010000000A000000020000");   // N = 2, a = 10
+        var after = Convert.FromHexString("10000C00010000000B000000020000");    // a = 11
+
+        var n = DecodingService.Compare(RowDecoder.Decode(before, s), RowDecoder.Decode(after, s), before, after).Single(c => c.Column == "n");
+
+        Assert.False(n.Changed);
+        Assert.Equal("7 (added after the row was written)", InspectorViewModel.ValueText(n.After));
+    }
+
+    [Fact]
+    public async Task OffRowValues_OfTheSplitFixture_AreNotShownAsNull()
+    {
+        var f = FixtureSet.Load("2022", "split");
+        await using var cache = await Data.LogCache.CreateAsync(Path.Combine(Path.GetTempPath(), $"sqllogexp_{Guid.NewGuid():N}.db"));
+        await cache.InsertBatchAsync(f.Log);
+        var vm = new InspectorViewModel(new DecodingService(cache, (au, _) => Task.FromResult(f.Schemas.GetValueOrDefault(au)), isLive: false), null);
+
+        await vm.InspectAsync(f.ForTable("dbo.ov").Records.Single(r => r.Operation == "LOP_INSERT_ROWS"));
+
+        Assert.Equal("(off-row value not followed)", InspectorViewModel.ValueText(vm.Values.Single(v => v.Column == "v2").After));
+        Assert.Equal("(off-row value not followed)", InspectorViewModel.ValueText(vm.Values.Single(v => v.Column == "m").After));
     }
 }

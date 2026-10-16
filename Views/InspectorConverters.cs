@@ -23,8 +23,9 @@ public static class InspectorConverters
         _ => new SolidColorBrush(Color.Parse("#E8E8E8")),   // octets inutilisés, colonne supprimée, fin inconnue
     });
 
-    public static readonly IValueConverter ChangedBrush = new FuncValueConverter<bool, IBrush>(changed =>
-        changed ? new SolidColorBrush(Color.Parse("#60FFD54F")) : Brushes.Transparent);
+    // Changed inconnu (null) n'est pas surligné : la cellule montre la note qui l'explique.
+    public static readonly IValueConverter ChangedBrush = new FuncValueConverter<bool?, IBrush>(changed =>
+        changed == true ? new SolidColorBrush(Color.Parse("#60FFD54F")) : Brushes.Transparent);
 
     public static readonly IValueConverter Value = new FuncValueConverter<object?, string>(InspectorViewModel.ValueText);
 }

@@ -36,7 +36,7 @@ public class InspectorViewModelTests
         await vm.InspectAsync(modify);
 
         Assert.Equal(5, vm.Values.Count);
-        Assert.Equal("a", Assert.Single(vm.Values, v => v.Changed).Column);
+        Assert.Equal("a", Assert.Single(vm.Values, v => v.Changed == true).Column);
         Assert.StartsWith("rebuilt", vm.ReplayStatus);
         Assert.Null(vm.SchemaMessage);
         Assert.False(vm.CanRebuildFromCurrentRow);
@@ -140,7 +140,7 @@ public class InspectorViewModelTests
         Assert.NotSame(before, vm.Inspector);
         Assert.Null(vm.Inspector!.SchemaMessage);
         Assert.StartsWith("rebuilt", vm.Inspector.ReplayStatus);
-        Assert.Equal("a", Assert.Single(vm.Inspector.Values, v => v.Changed).Column);
+        Assert.Equal("a", Assert.Single(vm.Inspector.Values, v => v.Changed == true).Column);
         Assert.False(vm.Inspector.CanRebuildFromCurrentRow);
         Assert.Equal(privileged, !vm.StatusMessage!.StartsWith("Warning"));
     }

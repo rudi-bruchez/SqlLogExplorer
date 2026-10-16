@@ -8,6 +8,9 @@ namespace SqlLogExplorer.Decoding;
 /// <summary>Parcours d'une ligne de données (spec03 §5). Ne lève jamais d'exception : les défauts deviennent des champs Malformed.</summary>
 public static class RowDecoder
 {
+    /// <summary>Note d'une colonne absente de la ligne : sa valeur est le défaut du catalogue (ou NULL), pas un refus.</summary>
+    public const string AddedAfterRow = "added after the row was written";
+
     public static DecodedRow Decode(byte[]? row, TableSchema? schema)
     {
         var fields = new List<DecodedField>();
@@ -144,7 +147,7 @@ public static class RowDecoder
         if (c.LeafNullBit > n)   // colonne ajoutée après l'écriture de la ligne : son leaf_offset n'est jamais lu
         {
             if (!c.IsDropped)
-                columns.Add(new DecodedColumn(c.Name, c.HasDefault ? c.DefaultValue : null, "added after the row was written"));
+                columns.Add(new DecodedColumn(c.Name, c.HasDefault ? c.DefaultValue : null, AddedAfterRow));
             return;
         }
 

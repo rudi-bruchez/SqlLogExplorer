@@ -119,7 +119,7 @@ public class DecodingServiceTests
         var x = await new DecodingService(cache, Lookup(f), false).InspectAsync(mods[0]);
 
         Assert.Equal("id=1, a=10, b=abc, c=True, d=False", Values(x.Before));
-        var changed = Assert.Single(x.Changes, c => c.Changed);
+        var changed = Assert.Single(x.Changes, c => c.Changed == true);
         Assert.Equal(new ColumnChange("a", 10, 11, true), changed);
         Assert.Equal(5, x.Changes.Count);
     }

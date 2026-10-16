@@ -128,7 +128,8 @@ public sealed partial class InspectorViewModel : ViewModelBase
         // Sans lignes reconstruites, les valeurs viennent du fragment seul : null y veut dire inconnu, pas NULL (spec03 §6.1).
         if (x.Row is { } row && x.SchemaMessage is null)
             foreach (var c in row.Columns)
-                Values.Add(record.Operation == "LOP_DELETE_ROWS" ? new ColumnChange(c.Name, c.Value, Unknown, false) : new ColumnChange(c.Name, Unknown, c.Value, false));
+                Values.Add(record.Operation == "LOP_DELETE_ROWS"
+                    ? new ColumnChange(c.Name, DecodingService.ValueOf(c), Unknown, false) : new ColumnChange(c.Name, Unknown, DecodingService.ValueOf(c), false));
         else if (x.Before is not null && x.After is not null)
             foreach (var c in x.Changes) Values.Add(c);
         else
@@ -175,11 +176,14 @@ public sealed partial class InspectorViewModel : ViewModelBase
     /// <summary>Valeur absente ou inconnue (l'autre côté d'un insert ou d'un delete, un fragment qui ne couvre pas la colonne) : cellule vide.</summary>
     public static readonly object Unknown = new();
 
-    /// <summary>Texte d'une valeur décodée : vide si inconnue, NULL SQL, binaire en hex, le reste en culture invariante.</summary>
+    /// <summary>Texte d'une valeur décodée : vide si inconnue, NULL SQL, binaire en hex, le reste en culture invariante ;
+    /// une valeur non lue montre sa note entre parenthèses à la place, une valeur annotée la montre après elle.</summary>
     public static string ValueText(object? value) => value switch
     {
         _ when ReferenceEquals(value, Unknown) => "",
         null => "NULL",
+        NotedValue { HasValue: true } n => $"{ValueText(n.Value)} ({n.Note})",
+        NotedValue n => $"({n.Note})",
         byte[] b => "0x" + Convert.ToHexString(b),
         _ => Convert.ToString(value, CultureInfo.InvariantCulture) ?? "",
     };

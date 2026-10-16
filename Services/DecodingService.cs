@@ -93,7 +93,7 @@ public sealed class DecodingService
         var result = RowReplayer.Replay(chain.Records, record.Lsn, RowReplayer.Classify(tx), RowReplayer.AdrReverts(tx), RowReplayer.FirstUndoLsns(tx), currentRow);
         var before = result.Before is null ? null : RowDecoder.Decode(result.Before, data);
         var after = result.After is null ? null : RowDecoder.Decode(result.After, data);
-        var changes = before is not null && after is not null ? Compare(before, after) : FragmentChanges(record, data);
+        var changes = before is not null && after is not null ? Compare(before, after, result.Before, result.After) : FragmentChanges(record, data);
         // Ancres 1 et 2 sans image : la ligne courante peut servir, en direct, sur une table clustered (spec03 §7.2).
         // Pas pour une transaction partiellement annulée : l'enregistrement termine la chaîne (spec03 §7.3), l'ancre 3 ne peut pas aboutir.
         var canRebuild = _isLive && data.IndexId == 1 && result.Status == NoImage && outcome != TxOutcome.PartlyRolledBack;
@@ -225,26 +225,46 @@ public sealed class DecodingService
         return all.Skip(start).Take(end - start).ToList();
     }
 
-    /// <summary>Colonne par colonne, par nom ; valeurs comparées en texte invariant, pour qu'un défaut lu au catalogue ("7") égale l'entier 7.</summary>
-    internal static IReadOnlyList<ColumnChange> Compare(DecodedRow before, DecodedRow after)
+    /// <summary>La valeur d'une colonne décodée telle que l'inspecteur la montre : avec sa note quand RowDecoder en a posé une.</summary>
+    public static object? ValueOf(DecodedColumn c) =>
+        c.Note is null ? c.Value : new NotedValue(c.Value, c.Value is not null || c.Note == RowDecoder.AddedAfterRow, c.Note);
+
+    /// <summary>Colonne par colonne, par nom ; valeurs comparées en texte invariant, pour qu'un défaut lu au catalogue ("7") égale l'entier 7.
+    /// Une valeur non lue d'un côté : changée si ses octets dans la ligne diffèrent de ceux de l'autre côté (deux pointeurs hors ligne
+    /// différents), inconnu sinon ; des octets égaux ne prouvent rien, une valeur hors ligne change sans que son pointeur bouge.</summary>
+    internal static IReadOnlyList<ColumnChange> Compare(DecodedRow before, DecodedRow after, byte[]? beforeRow, byte[]? afterRow)
     {
         var afterByName = after.Columns.ToDictionary(c => c.Name);
         var changes = new List<ColumnChange>();
         foreach (var b in before.Columns)
         {
             var a = afterByName.GetValueOrDefault(b.Name);
-            changes.Add(new ColumnChange(b.Name, b.Value, a?.Value, a is null || Text(b.Value) != Text(a.Value)));
+            if (a is null) { changes.Add(new ColumnChange(b.Name, ValueOf(b), null, true)); continue; }
+            var (bv, av) = (ValueOf(b), ValueOf(a));
+            bool? changed = bv is NotedValue { HasValue: false } || av is NotedValue { HasValue: false }
+                ? Stored(before, beforeRow, b.Name) is { } x && Stored(after, afterRow, a.Name) is { } y && x.Role == y.Role && !x.Bytes.SequenceEqual(y.Bytes) ? true : null
+                : Text(bv) != Text(av);
+            changes.Add(new ColumnChange(b.Name, bv, av, changed));
         }
         var seen = before.Columns.Select(c => c.Name).ToHashSet();
         foreach (var a in after.Columns.Where(c => !seen.Contains(c.Name)))
-            changes.Add(new ColumnChange(a.Name, null, a.Value, true));
+            changes.Add(new ColumnChange(a.Name, null, ValueOf(a), true));
         return changes;
+    }
+
+    /// <summary>Les octets d'une colonne dans la ligne et leur rôle ; null quand la ligne n'en porte pas.</summary>
+    private static (FieldRole Role, byte[] Bytes)? Stored(DecodedRow decoded, byte[]? row, string column)
+    {
+        var f = decoded.Fields.FirstOrDefault(f => f.Column == column && f.Role is FieldRole.FixedColumn or FieldRole.VariableColumn or FieldRole.LobPointer or FieldRole.Malformed);
+        if (row is null || f is null || f.Offset + f.Length > row.Length) return null;
+        return (f.Role, row[f.Offset..(f.Offset + f.Length)]);
     }
 
     // Un binaire se compare par ses octets : Convert.ToString d'un byte[] ne rend que le nom du type.
     private static string? Text(object? value) => value switch
     {
         null => null,
+        NotedValue n => Text(n.Value),
         byte[] bytes => Convert.ToHexString(bytes),
         _ => Convert.ToString(value, CultureInfo.InvariantCulture),
     };
