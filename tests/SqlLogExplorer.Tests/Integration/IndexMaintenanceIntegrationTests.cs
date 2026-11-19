@@ -175,6 +175,7 @@ public class IndexMaintenanceIntegrationTests(ITestOutputHelper output)
         var trn = $"{DataDir}/{db}.trn";
         var liveCache = Path.Combine(Path.GetTempPath(), $"sqllogexp_{Guid.NewGuid():N}.db");
         var dumpCache = Path.Combine(Path.GetTempPath(), $"sqllogexp_{Guid.NewGuid():N}.db");
+        var cutCache = Path.Combine(Path.GetTempPath(), $"sqllogexp_{Guid.NewGuid():N}.db");
         await ExecAsync(master!, $"CREATE DATABASE [{db}];");
         try
         {
@@ -290,6 +291,9 @@ public class IndexMaintenanceIntegrationTests(ITestOutputHelper output)
             var live = await AnalyzeAsync(new LiveDatabaseBackend().ParseLogAsync(new[] { dbConn }), liveCache);
             Check("live", live, statements, spid, otherSpid);
 
+            // Avant la sauvegarde du journal, qui le tronque : un import en direct coupé pendant la reconstruction en ligne.
+            await CheckCutRebuildAsync(cn, dbConn, s5, spid, cutCache);
+
             await ExecAsync(master!, $"BACKUP LOG [{db}] TO DISK = N'{trn}' WITH INIT;");
             var dumped = await AnalyzeAsync(DumpAsync(master!, trn), dumpCache);
             Check("backup", dumped, statements, spid, otherSpid);
@@ -305,7 +309,74 @@ public class IndexMaintenanceIntegrationTests(ITestOutputHelper output)
             }
             SqliteCleanup(liveCache);
             SqliteCleanup(dumpCache);
+            SqliteCleanup(cutCache);
         }
+    }
+
+    private static async Task<IReadOnlyList<string>> LsnsAsync(SqlConnection cn, string sql, params (string Name, object Value)[] parameters)
+    {
+        await using var cmd = cn.CreateCommand();
+        cmd.CommandText = sql;
+        cmd.CommandTimeout = 0;
+        foreach (var (name, value) in parameters) cmd.Parameters.AddWithValue(name, value);
+        var list = new List<string>();
+        await using var r = await cmd.ExecuteReaderAsync();
+        while (await r.ReadAsync()) list.Add(r.GetString(0));
+        return list;
+    }
+
+    /// <summary>Import en direct arrêté au début d'une OnlineIndexInsertTxn de la session vers le milieu de S5 : l'ALTER INDEX n'a
+    /// pas de validation dans l'import, son étendue va jusqu'à la dernière famille de la session (spec04 §4, règle 1).</summary>
+    private async Task CheckCutRebuildAsync(SqlConnection cn, string dbConn, Statement s5, int spid, string cachePath)
+    {
+        var inserts = await LsnsAsync(cn, """
+            SELECT [Current LSN] FROM sys.fn_dblog(NULL, NULL)
+            WHERE [Current LSN] > @before AND [Current LSN] <= @after AND [Operation] = 'LOP_BEGIN_XACT'
+              AND [Transaction Name] = 'OnlineIndexInsertTxn' AND [SPID] = @spid
+            ORDER BY [Current LSN];
+            """, ("@before", s5.Before), ("@after", s5.After), ("@spid", spid));
+        var alter = await LsnsAsync(cn, """
+            SELECT l.[Current LSN] FROM sys.fn_dblog(NULL, NULL) AS l
+            WHERE l.[Transaction ID] IN (SELECT b.[Transaction ID] FROM sys.fn_dblog(NULL, NULL) AS b
+                                         WHERE b.[Current LSN] > @before AND b.[Current LSN] <= @after
+                                           AND b.[Operation] = 'LOP_BEGIN_XACT' AND b.[Transaction Name] = 'ALTER INDEX'
+                                           AND b.[SPID] = @spid)
+            ORDER BY l.[Current LSN];
+            """, ("@before", s5.Before), ("@after", s5.After), ("@spid", spid));
+        var start = await LsnsAsync(cn, "SELECT MIN([Current LSN]) FROM sys.fn_dblog(NULL, NULL);");
+        Assert.NotEmpty(inserts);
+        Assert.NotEmpty(alter);
+
+        var cut = inserts[inserts.Count / 2];
+        // Le dernier enregistrement de l'ALTER INDEX dans l'import coupé, et les OnlineIndexInsertTxn qui commencent après lui :
+        // celles que l'ancienne étendue (jusqu'au dernier LSN de l'ALTER INDEX) laissait sans opération.
+        // Bruts pour T-SQL, normalisés pour les comparaisons ordinales.
+        var cutKey = Lsn.Normalize(cut);
+        var alterLast = alter.Select(Lsn.Normalize).Where(l => string.CompareOrdinal(l, cutKey) < 0).Max(StringComparer.Ordinal)!;
+        var afterAlter = inserts.Select(Lsn.Normalize).Count(l => string.CompareOrdinal(l, alterLast) > 0 && string.CompareOrdinal(l, cutKey) <= 0);
+        var reference = await ReferenceAsync(cn, s5.Before, cut, spid);
+
+        var report = await AnalyzeAsync(new LiveDatabaseBackend(new LsnRange(start[0], cut)).ParseLogAsync(new[] { dbConn }), cachePath);
+        var ops = report.Operations.Where(o => Between(o.FirstLsn, s5.Before, cut)).ToList();
+        var bytes = ops.Sum(o => o.Bytes);
+        var ratio = reference == 0 ? double.NaN : 100.0 * bytes / reference;
+        // Part des octets dans les transactions qui commencent après le dernier enregistrement de l'ALTER INDEX : sans elle,
+        // la coupe ne distinguerait pas l'étendue amendée de l'ancienne.
+        var late = ops.SelectMany(o => o.Transactions).Where(t => string.CompareOrdinal(t.FirstLsn, alterLast) > 0).Sum(t => t.Bytes);
+        var lateShare = bytes == 0 ? double.NaN : 100.0 * late / bytes;
+        output.WriteLine(string.Create(CultureInfo.InvariantCulture,
+            $"[cut] S5 cut at {cut} ({inserts.Count / 2 + 1} of {inserts.Count} OnlineIndexInsertTxn), ALTER INDEX last record before the cut {alterLast} " +
+            $"({alter.Count} records in all), {afterAlter} OnlineIndexInsertTxn begin after it, holding {late} B ({lateShare:F2} % of the operation)"));
+        output.WriteLine(string.Create(CultureInfo.InvariantCulture,
+            $"[cut] S5: {ops.Count} op(s) [{string.Join(", ", ops.Select(o => $"{o.Kind} spid {o.Spid} {o.Bytes} B {o.Transactions.Count} tx partial {o.Partial}"))}], " +
+            $"operations {bytes} B, reference {reference} B, ratio {ratio:F2} %"));
+
+        Assert.True(afterAlter > 0, "No OnlineIndexInsertTxn begins after the ALTER INDEX's last record before the cut.");
+        Assert.True(lateShare > 50, "The cut leaves too few bytes after the ALTER INDEX's last record to tell the spans apart.");
+        var op = Assert.Single(ops);
+        Assert.Equal(MaintenanceKind.RebuildOnline, op.Kind);
+        Assert.True(op.Partial);
+        Assert.InRange(ratio, 95.0, 101.0);
     }
 
     private static void SqliteCleanup(string path)

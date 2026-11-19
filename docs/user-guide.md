@@ -158,7 +158,7 @@ The lines are sorted by log bytes, largest first, and each column can be sorted 
 
 ### Accuracy of the figures
 
-In the integration scenario (`tests/SqlLogExplorer.Tests/Integration/IndexMaintenanceIntegrationTests.cs`) on SQL Server 2017, 2019, 2022 and 2025, the operations of each statement came within 0.1 % of the log record bytes its session wrote, with concurrent DML on another table. Records written outside any transaction are counted with an operation only inside its span. When another session's DML hits the rebuilt table, the ghost cleanup it causes before the rebuild's first transaction is not attributed to the rebuild (measured on SQL Server 2022).
+In the integration scenario (`tests/SqlLogExplorer.Tests/Integration/IndexMaintenanceIntegrationTests.cs`) on SQL Server 2017, 2019, 2022 and 2025, the operations of each statement came within 0.1 % of the log record bytes its session wrote, with concurrent DML on another table. Records written outside any transaction are counted with an operation only inside its span. When another session's DML hits the rebuilt table, the ghost cleanup it causes before the rebuild's first transaction is not attributed to the rebuild (measured on SQL Server 2022). A live import cut during the online rebuild, after its preparation, gave one `not committed in the import` line with 100.00 % of the bytes its session wrote up to the cut (SQL Server 2022).
 
 ### Limits
 
