@@ -1,3 +1,4 @@
+using System;
 using System.Collections.ObjectModel;
 using System.Threading.Tasks;
 using SqlLogExplorer.Data;
@@ -37,12 +38,25 @@ public sealed class StatisticsViewModel : ViewModelBase
         ByObject.Clear();
         foreach (var x in byObj) ByObject.Add(x);
 
-        var report = await IndexMaintenance.AnalyzeAsync(_query);
-        double Share(long bytes) => report.TotalBytes == 0 ? 0 : 100.0 * bytes / report.TotalBytes;
+        // La maintenance d'index ignore le filtre : elle concerne tout l'import (spec04 §6).
         MaintenanceRows.Clear();
-        foreach (var op in report.Operations) MaintenanceRows.Add(new IndexMaintenanceRow(op, Share(op.Bytes)));
-        MaintenanceSummary = $"Imported log record bytes: {IndexMaintenanceRow.FormatBytes(report.TotalBytes)}. " +
-            $"Index maintenance: {IndexMaintenanceRow.FormatBytes(report.MaintenanceBytes)} " +
-            $"({IndexMaintenanceRow.FormatShare(Share(report.MaintenanceBytes))}).";
+        try
+        {
+            // Hors du thread UI : les appels asynchrones de Microsoft.Data.Sqlite sont synchrones, et l'analyse lit tout le cache.
+            // ConnectionGate sérialise chaque requête sur la connexion, celles des autres onglets comprises. Les collections
+            // se remplissent après l'await, sur le contexte de l'appelant.
+            var report = await Task.Run(() => IndexMaintenance.AnalyzeAsync(_query));
+            double Share(long bytes) => report.TotalBytes == 0 ? 0 : 100.0 * bytes / report.TotalBytes;
+            foreach (var op in report.Operations) MaintenanceRows.Add(new IndexMaintenanceRow(op, Share(op.Bytes)));
+            MaintenanceSummary = $"Imported log record bytes: {IndexMaintenanceRow.FormatBytes(report.TotalBytes)}. " +
+                $"Index maintenance: {IndexMaintenanceRow.FormatBytes(report.MaintenanceBytes)} " +
+                $"({IndexMaintenanceRow.FormatShare(Share(report.MaintenanceBytes))}).";
+        }
+        catch (Exception ex)
+        {
+            // Un échec de cet onglet ne doit pas faire perdre l'import ni les autres onglets.
+            MaintenanceRows.Clear();
+            MaintenanceSummary = $"Index maintenance could not be computed: {ex.Message}";
+        }
     }
 }
