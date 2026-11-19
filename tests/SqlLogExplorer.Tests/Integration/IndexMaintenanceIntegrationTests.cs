@@ -1,0 +1,291 @@
+using System.Globalization;
+using Microsoft.Data.SqlClient;
+using SqlLogExplorer.Backends;
+using SqlLogExplorer.Data;
+using SqlLogExplorer.Models;
+using SqlLogExplorer.Services;
+using Xunit;
+using Xunit.Abstractions;
+
+namespace SqlLogExplorer.Tests.Integration;
+
+/// <summary>Chaque instruction de maintenance d'index, ses opérations dans le rapport, en direct et depuis une sauvegarde du journal (spec04 §8).</summary>
+public class IndexMaintenanceIntegrationTests(ITestOutputHelper output)
+{
+    private const string DataDir = "/var/opt/mssql/data";
+
+    /// <summary>Une instruction : ses deux LSN (bruts, tels que fn_dblog les rend), les unités IN_ROW_DATA lues après elle et sa référence.</summary>
+    private sealed record Statement(string Name, string Before, string After, IReadOnlyList<long> Units, long Reference);
+
+    private static async Task ExecAsync(string connectionString, string sql)
+    {
+        await using var cn = new SqlConnection(connectionString);
+        await cn.OpenAsync();
+        await using var cmd = cn.CreateCommand();
+        cmd.CommandText = sql;
+        cmd.CommandTimeout = 0;
+        await cmd.ExecuteNonQueryAsync();
+    }
+
+    private static async Task<object?> ScalarAsync(SqlConnection cn, string sql, params (string Name, object Value)[] parameters)
+    {
+        await using var cmd = cn.CreateCommand();
+        cmd.CommandText = sql;
+        cmd.CommandTimeout = 0;
+        foreach (var (name, value) in parameters) cmd.Parameters.AddWithValue(name, value);
+        return await cmd.ExecuteScalarAsync();
+    }
+
+    private static async Task<string> MaxLsnAsync(SqlConnection cn)
+        => (string)(await ScalarAsync(cn, "SELECT MAX([Current LSN]) FROM sys.fn_dblog(NULL, NULL);"))!;
+
+    /// <summary>Les unités IN_ROW_DATA des index d'une table (tous, ou celui nommé).</summary>
+    private static async Task<IReadOnlyList<long>> UnitsAsync(SqlConnection cn, string table, string? index = null)
+    {
+        await using var cmd = cn.CreateCommand();
+        cmd.CommandText = """
+            SELECT au.allocation_unit_id
+            FROM sys.allocation_units AS au
+            JOIN sys.partitions AS p ON au.container_id = p.hobt_id
+            JOIN sys.indexes AS i ON i.object_id = p.object_id AND i.index_id = p.index_id
+            WHERE au.type_desc = N'IN_ROW_DATA' AND p.object_id = OBJECT_ID(@table) AND (@index IS NULL OR i.name = @index);
+            """;
+        cmd.Parameters.AddWithValue("@table", table);
+        cmd.Parameters.AddWithValue("@index", (object?)index ?? DBNull.Value);
+        var list = new List<long>();
+        await using var r = await cmd.ExecuteReaderAsync();
+        while (await r.ReadAsync()) list.Add(r.GetInt64(0));
+        return list;
+    }
+
+    /// <summary>Référence : octets des transactions dont le LOP_BEGIN_XACT a la session, plus les enregistrements hors transaction,
+    /// entre les deux LSN. Bornes en comparaison de texte, jamais fn_dblog(@before, @after) (Msg 9005, spec03 §2).</summary>
+    private static async Task<long> ReferenceAsync(SqlConnection cn, string before, string after, int spid)
+        => Convert.ToInt64(await ScalarAsync(cn, """
+            SELECT [Transaction ID] AS tid, [Operation] AS op, [SPID] AS spid, [Log Record Length] AS len
+            INTO #w FROM sys.fn_dblog(NULL, NULL) WHERE [Current LSN] > @before AND [Current LSN] <= @after;
+            SELECT COALESCE(SUM(CAST(len AS bigint)), 0) FROM #w
+            WHERE tid = '0000:00000000' OR tid IN (SELECT tid FROM #w WHERE op = 'LOP_BEGIN_XACT' AND spid = @spid);
+            DROP TABLE #w;
+            """, ("@before", before), ("@after", after), ("@spid", spid)), CultureInfo.InvariantCulture);
+
+    private static async Task<MaintenanceReport> AnalyzeAsync(IAsyncEnumerable<LogRecord> records, string cachePath)
+    {
+        await using var cache = await LogCache.CreateAsync(cachePath);
+        var batch = new List<LogRecord>(5000);
+        await foreach (var r in records)
+        {
+            batch.Add(r);
+            if (batch.Count == 5000)
+            {
+                await cache.InsertBatchAsync(batch);
+                batch.Clear();
+            }
+        }
+        await cache.InsertBatchAsync(batch);
+        return await IndexMaintenance.AnalyzeAsync(new LogQuery(cache.Connection));
+    }
+
+    private static async IAsyncEnumerable<LogRecord> DumpAsync(string master, string trn)
+    {
+        await using var cn = new SqlConnection(master);
+        await cn.OpenAsync();
+        await using var cmd = cn.CreateCommand();
+        cmd.CommandText = FnDumpDblogQuery.Build("@path");
+        cmd.CommandTimeout = 0;
+        cmd.Parameters.AddWithValue("@path", trn);
+        await using var r = await cmd.ExecuteReaderAsync();
+        while (await r.ReadAsync()) yield return LogColumns.Read(r);
+    }
+
+    private static bool Between(string lsn, string before, string after)
+    {
+        var l = Lsn.Normalize(lsn);
+        return string.CompareOrdinal(l, Lsn.Normalize(before)) > 0 && string.CompareOrdinal(l, Lsn.Normalize(after)) <= 0;
+    }
+
+    private void Check(string import, MaintenanceReport report, IReadOnlyList<Statement> statements, int spid, int otherSpid)
+    {
+        output.WriteLine($"[{import}] {report.Operations.Count} operations, total {report.TotalBytes} B, maintenance {report.MaintenanceBytes} B");
+        var expected = new Dictionary<string, (int Count, MaintenanceKind? Kind)>(StringComparer.Ordinal)
+        {
+            ["S1"] = (2, MaintenanceKind.Reorganize),
+            ["S2"] = (2, MaintenanceKind.Reorganize),
+            ["S3"] = (0, null),
+            ["S4"] = (1, MaintenanceKind.RebuildOffline),
+            ["S5"] = (1, MaintenanceKind.RebuildOnline),
+        };
+
+        var failures = new List<string>();
+        foreach (var s in statements)
+        {
+            var ops = report.Operations.Where(o => Between(o.FirstLsn, s.Before, s.After)).ToList();
+            var bytes = ops.Sum(o => o.Bytes);
+            var ratio = s.Reference == 0 ? double.NaN : 100.0 * bytes / s.Reference;
+            var firsts = ops.Where(o => o.Objects.Count > 0).Select(o => o.Objects[0].AllocUnitId).ToHashSet();
+            output.WriteLine(string.Create(CultureInfo.InvariantCulture,
+                $"[{import}] {s.Name}: {ops.Count} op(s) [{string.Join(", ", ops.Select(o => $"{o.Kind} spid {o.Spid} {o.Bytes} B first {(o.Objects.Count > 0 ? o.Objects[0].Display : "-")}"))}], " +
+                $"operations {bytes} B, reference {s.Reference} B, ratio {ratio:F2} %, units read after [{string.Join(", ", s.Units)}]"));
+
+            var (count, kind) = expected[s.Name];
+            if (ops.Count != count) failures.Add($"{import} {s.Name}: {ops.Count} operations, {count} expected");
+            if (kind is MaintenanceKind k && ops.Any(o => o.Kind != k)) failures.Add($"{import} {s.Name}: a kind other than {k}");
+            if (ops.Count > 0 && !(ratio >= 95.0 && ratio <= 101.0))
+                failures.Add(string.Create(CultureInfo.InvariantCulture, $"{import} {s.Name}: ratio {ratio:F2} % outside 95..101 %"));
+
+            var units = s.Units.ToHashSet();
+            switch (s.Name)
+            {
+                case "S1" or "S2" when !firsts.SetEquals(units):
+                    failures.Add($"{import} {s.Name}: first objects [{string.Join(", ", firsts)}] differ from [{string.Join(", ", units)}]");
+                    break;
+                case "S5" when !firsts.IsSubsetOf(units):
+                    failures.Add($"{import} {s.Name}: first objects [{string.Join(", ", firsts)}] not in [{string.Join(", ", units)}]");
+                    break;
+                case "S4" when ops.Count == 1 && !units.IsSubsetOf(ops[0].Objects.Select(o => o.AllocUnitId)):
+                    failures.Add($"{import} {s.Name}: objects [{string.Join(", ", ops[0].Objects.Select(o => o.AllocUnitId))}] lack one of [{string.Join(", ", units)}]");
+                    break;
+            }
+        }
+
+        var outside = report.Operations.Count(o => !statements.Any(s => Between(o.FirstLsn, s.Before, s.After)));
+        output.WriteLine($"[{import}] operations outside the statements: {outside}");
+        if (report.Operations.Any(o => o.Spid == otherSpid)) failures.Add($"{import}: an operation has the second connection's SPID {otherSpid}");
+        if (report.Operations.Any(o => o.Spid != spid)) output.WriteLine($"[{import}] note: an operation has a SPID other than {spid}");
+        Assert.True(failures.Count == 0, string.Join(Environment.NewLine, failures));
+    }
+
+    [IntegrationFact]
+    public async Task Operations_MatchEachStatement_LiveAndFromBackup()
+    {
+        var master = Environment.GetEnvironmentVariable("SQLLOGEXPLORER_TEST_SQL");
+        Assert.False(string.IsNullOrEmpty(master), "Définir SQLLOGEXPLORER_TEST_SQL (voir tests/fixtures/sqlserver.sh).");
+
+        var db = $"sle_im_{Guid.NewGuid():N}";
+        var dbConn = new SqlConnectionStringBuilder(master!) { InitialCatalog = db, Pooling = false }.ConnectionString;
+        var bak = $"{DataDir}/{db}.bak";
+        var trn = $"{DataDir}/{db}.trn";
+        var liveCache = Path.Combine(Path.GetTempPath(), $"sqllogexp_{Guid.NewGuid():N}.db");
+        var dumpCache = Path.Combine(Path.GetTempPath(), $"sqllogexp_{Guid.NewGuid():N}.db");
+        await ExecAsync(master!, $"CREATE DATABASE [{db}];");
+        try
+        {
+            await ExecAsync(master!, $"ALTER DATABASE [{db}] SET RECOVERY FULL; BACKUP DATABASE [{db}] TO DISK = N'{bak}' WITH INIT;");
+
+            // Clés id et n aléatoires, insérées par petits lots : un n constant ou séquentiel laisse IX_n sous 10 % (mesuré).
+            const string fill = """
+                DECLARE @i int = 0;
+                WHILE @i < 100
+                BEGIN
+                    INSERT dbo.{0} (n) SELECT TOP (200) ABS(CHECKSUM(NEWID())) FROM sys.all_objects;
+                    SET @i += 1;
+                END;
+                """;
+            await ExecAsync(dbConn, """
+                CREATE TABLE dbo.T (id uniqueidentifier DEFAULT NEWID() PRIMARY KEY, n int, pad char(400) DEFAULT 'x');
+                CREATE INDEX IX_n ON dbo.T (n);
+                CREATE TABLE dbo.A (id uniqueidentifier DEFAULT NEWID() PRIMARY KEY, n int, pad char(400) DEFAULT 'x');
+                CREATE TABLE dbo.B (id uniqueidentifier DEFAULT NEWID() PRIMARY KEY, n int, pad char(400) DEFAULT 'x');
+                """);
+            foreach (var table in new[] { "T", "A", "B" })
+                await ExecAsync(dbConn, string.Format(CultureInfo.InvariantCulture, fill, table));
+
+            await using var cn = new SqlConnection(dbConn);
+            await cn.OpenAsync();
+            var spid = Convert.ToInt32(await ScalarAsync(cn, "SELECT @@SPID;"), CultureInfo.InvariantCulture);
+
+            await using (var cmd = cn.CreateCommand())
+            {
+                cmd.CommandText = """
+                    SELECT OBJECT_NAME(s.object_id) + '.' + i.name, s.avg_fragmentation_in_percent
+                    FROM sys.dm_db_index_physical_stats(DB_ID(), NULL, NULL, NULL, 'LIMITED') AS s
+                    JOIN sys.indexes AS i ON i.object_id = s.object_id AND i.index_id = s.index_id
+                    WHERE s.alloc_unit_type_desc = N'IN_ROW_DATA' AND s.object_id IN (OBJECT_ID('dbo.T'), OBJECT_ID('dbo.A'), OBJECT_ID('dbo.B'));
+                    """;
+                var fragmentation = new List<(string Index, double Percent)>();
+                await using var r = await cmd.ExecuteReaderAsync();
+                while (await r.ReadAsync()) fragmentation.Add((r.GetString(0), r.GetDouble(1)));
+                foreach (var (index, percent) in fragmentation)
+                    output.WriteLine(string.Create(CultureInfo.InvariantCulture, $"fragmentation {index}: {percent:F1} %"));
+                Assert.Equal(4, fragmentation.Count);
+                Assert.All(fragmentation, f => Assert.True(f.Percent > 30, $"{f.Index} {f.Percent} %"));
+            }
+
+            var statements = new List<Statement>();
+            async Task RunAsync(string name, string sql, Func<Task<IReadOnlyList<long>>> units, Func<Task>? during = null)
+            {
+                var before = await MaxLsnAsync(cn);
+                await using (var cmd = cn.CreateCommand())
+                {
+                    cmd.CommandText = sql;
+                    cmd.CommandTimeout = 0;
+                    await cmd.ExecuteNonQueryAsync();
+                }
+                if (during is not null) await during();
+                var after = await MaxLsnAsync(cn);
+                statements.Add(new Statement(name, before, after, await units(), 0));
+            }
+
+            await RunAsync("S1", "ALTER INDEX ALL ON dbo.T REORGANIZE;", () => UnitsAsync(cn, "dbo.T"));
+            await RunAsync("S2", "ALTER INDEX ALL ON dbo.A REORGANIZE; ALTER INDEX ALL ON dbo.B REORGANIZE;",
+                async () => [.. await UnitsAsync(cn, "dbo.A"), .. await UnitsAsync(cn, "dbo.B")]);
+            await RunAsync("S3", "ALTER INDEX IX_n ON dbo.T SET (ALLOW_PAGE_LOCKS = ON);", () => UnitsAsync(cn, "dbo.T", "IX_n"));
+            await RunAsync("S4", "ALTER INDEX ALL ON dbo.T REBUILD;", () => UnitsAsync(cn, "dbo.T"));
+
+            // S5 : une seconde connexion met à jour dbo.A en boucle tant que la reconstruction en ligne tourne.
+            var stop = new CancellationTokenSource();
+            var started = new TaskCompletionSource();
+            var otherSpid = 0;
+            var updates = 0;
+            var updater = Task.Run(async () =>
+            {
+                await using var other = new SqlConnection(dbConn);
+                await other.OpenAsync();
+                otherSpid = Convert.ToInt32(await ScalarAsync(other, "SELECT @@SPID;"), CultureInfo.InvariantCulture);
+                while (!stop.IsCancellationRequested)
+                {
+                    await ScalarAsync(other, "UPDATE TOP (50) dbo.A SET n = n + 1;");
+                    updates++;
+                    started.TrySetResult();
+                }
+            });
+            await Task.WhenAny(started.Task, updater);
+            await RunAsync("S5", "ALTER INDEX IX_n ON dbo.T REBUILD WITH (ONLINE = ON);", () => UnitsAsync(cn, "dbo.T", "IX_n"),
+                async () =>
+                {
+                    stop.Cancel();
+                    await updater;
+                });
+            output.WriteLine($"session {spid}, second connection {otherSpid}, {updates} updates");
+            Assert.NotEqual(spid, otherSpid);
+            Assert.True(updates > 0);
+
+            for (var i = 0; i < statements.Count; i++)
+                statements[i] = statements[i] with { Reference = await ReferenceAsync(cn, statements[i].Before, statements[i].After, spid) };
+
+            var live = await AnalyzeAsync(new LiveDatabaseBackend().ParseLogAsync(new[] { dbConn }), liveCache);
+            Check("live", live, statements, spid, otherSpid);
+
+            await ExecAsync(master!, $"BACKUP LOG [{db}] TO DISK = N'{trn}' WITH INIT;");
+            var dumped = await AnalyzeAsync(DumpAsync(master!, trn), dumpCache);
+            Check("backup", dumped, statements, spid, otherSpid);
+        }
+        finally
+        {
+            await ExecAsync(master!, $"ALTER DATABASE [{db}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE [{db}];");
+            foreach (var path in new[] { bak, trn })
+            {
+                try { await ExecAsync(master!, $"EXEC master.sys.xp_delete_file 0, N'{path}';"); }
+                catch (SqlException e) { output.WriteLine($"cleanup {path}: {e.Message}"); }
+            }
+            SqliteCleanup(liveCache);
+            SqliteCleanup(dumpCache);
+        }
+    }
+
+    private static void SqliteCleanup(string path)
+    {
+        Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+        if (File.Exists(path)) File.Delete(path);
+    }
+}
