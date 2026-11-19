@@ -24,6 +24,11 @@ public sealed record LogRecord(
     /// le renvoie (yyyy/MM/dd HH:mm:ss:fff, heure locale du serveur), nul sur les autres enregistrements.</summary>
     public string? BeginTime { get; init; }
     public string? EndTime { get; init; }
+
+    /// <summary>[Log Record Length], [SPID] (LOP_BEGIN_XACT seulement) et [Parent Transaction ID] (spec04 §3), tels que fn_dblog les renvoie.</summary>
+    public int? LogRecordLength { get; init; }
+    public int? Spid { get; init; }
+    public string? ParentTransactionId { get; init; }
     public byte[]? RowLogContents2 { get; init; }
     public byte[]? RowLogContents3 { get; init; }
     public byte[]? RowLogContents4 { get; init; }

@@ -25,7 +25,8 @@ public class LogColumnsIntegrationTests
 
     private sealed record Plain(long? AllocUnitId, long? PartitionId, string? PageId, int? SlotId, int? OffsetInRow,
         int? ModifySize, int? NumElements, string? Description, string? TransactionName,
-        byte[]? Rlc0, byte[]? Rlc1, byte[]? Rlc2, byte[]? Rlc3, byte[]? Rlc4, byte[]? Rlc5, string Operation, byte[]? LogRecord, string? BeginTime, string? EndTime);
+        byte[]? Rlc0, byte[]? Rlc1, byte[]? Rlc2, byte[]? Rlc3, byte[]? Rlc4, byte[]? Rlc5, string Operation, byte[]? LogRecord, string? BeginTime, string? EndTime,
+        int? LogRecordLength, int? Spid, string? ParentTransactionId);
 
     /// <summary>Relecture indépendante, colonnes lues par nom, pour épingler le mappage de LogColumns.Read.</summary>
     private static async Task<Dictionary<string, Plain>> ReadPlainAsync(string connectionString)
@@ -38,7 +39,8 @@ public class LogColumnsIntegrationTests
             SELECT [Current LSN], [AllocUnitId], [PartitionId], [Page ID], [Slot ID], [Offset in Row], [Modify Size],
                    [Num Elements], [Description], [Transaction Name],
                    [RowLog Contents 0], [RowLog Contents 1], [RowLog Contents 2], [RowLog Contents 3],
-                   [RowLog Contents 4], [RowLog Contents 5], [Operation], [Log Record], [Begin Time], [End Time]
+                   [RowLog Contents 4], [RowLog Contents 5], [Operation], [Log Record], [Begin Time], [End Time],
+                   [Log Record Length], [SPID], [Parent Transaction ID]
             FROM sys.fn_dblog(NULL, NULL);
             """;
         await using var r = await cmd.ExecuteReaderAsync();
@@ -50,7 +52,8 @@ public class LogColumnsIntegrationTests
             map[Lsn.Normalize((string)r["Current LSN"])] = new Plain(L("AllocUnitId"), L("PartitionId"), T("Page ID"),
                 I("Slot ID"), I("Offset in Row"), I("Modify Size"), I("Num Elements"), T("Description"), T("Transaction Name"),
                 B("RowLog Contents 0"), B("RowLog Contents 1"), B("RowLog Contents 2"), B("RowLog Contents 3"),
-                B("RowLog Contents 4"), B("RowLog Contents 5"), T("Operation")!, B("Log Record"), T("Begin Time"), T("End Time"));
+                B("RowLog Contents 4"), B("RowLog Contents 5"), T("Operation")!, B("Log Record"), T("Begin Time"), T("End Time"),
+                I("Log Record Length"), I("SPID"), T("Parent Transaction ID"));
         return map;
     }
 
@@ -76,6 +79,9 @@ public class LogColumnsIntegrationTests
             Assert.True(p.TransactionName == r.TransactionName, $"{w} TransactionName");
             Assert.True(p.BeginTime == r.BeginTime, $"{w} BeginTime");
             Assert.True(p.EndTime == r.EndTime, $"{w} EndTime");
+            Assert.True(p.LogRecordLength == r.LogRecordLength, $"{w} LogRecordLength");
+            Assert.True(p.Spid == r.Spid, $"{w} Spid");
+            Assert.True(p.ParentTransactionId == r.ParentTransactionId, $"{w} ParentTransactionId");
             Bytes(p.Rlc0, r.RowLogContents0, $"{w} RLC0"); Bytes(p.Rlc1, r.RowLogContents1, $"{w} RLC1");
             Bytes(p.Rlc2, r.RowLogContents2, $"{w} RLC2"); Bytes(p.Rlc3, r.RowLogContents3, $"{w} RLC3");
             Bytes(p.Rlc4, r.RowLogContents4, $"{w} RLC4"); Bytes(p.Rlc5, r.RowLogContents5, $"{w} RLC5");
@@ -100,6 +106,10 @@ public class LogColumnsIntegrationTests
         Assert.Contains(records, r => r.TransactionName is not null);
         Assert.Contains(records, r => r.Operation == "LOP_BEGIN_XACT" && r.BeginTime is not null);
         Assert.Contains(records, r => r.Operation == "LOP_COMMIT_XACT" && r.EndTime is not null);
+        Assert.Contains(records, r => r.LogRecordLength is > 0);
+        Assert.Contains(records, r => r.Operation == "LOP_BEGIN_XACT" && r.Spid is not null);
+        Assert.All(records.Where(r => r.Operation != "LOP_BEGIN_XACT"), r => Assert.Null(r.Spid));
+        Assert.Contains(records, r => r.ParentTransactionId is not null);
         Assert.Contains(records, r => r.RowLogContents2 is not null);
         Assert.Contains(records, r => r.RowLogContents3 is not null);
         Assert.Contains(records, r => r.RowLogContents4 is not null);
@@ -188,6 +198,17 @@ public class LogColumnsIntegrationTests
                 await using var r = await cmd.ExecuteReaderAsync();
                 while (await r.ReadAsync()) dumped.Add(LogColumns.Read(r));
             }
+
+            // Longueur, session et parent : mêmes valeurs dans le .trn que dans le journal vivant (spec04 §3).
+            var liveAll = (await ReadAsync(new LiveDatabaseBackend(), dbConn)).ToDictionary(r => r.Lsn);
+            foreach (var d in dumped.Where(r => liveAll.ContainsKey(r.Lsn)))
+            {
+                var l = liveAll[d.Lsn];
+                Assert.True(l.LogRecordLength == d.LogRecordLength, $"{d.Lsn} LogRecordLength");
+                Assert.True(l.Spid == d.Spid, $"{d.Lsn} Spid");
+                Assert.True(l.ParentTransactionId == d.ParentTransactionId, $"{d.Lsn} ParentTransactionId");
+            }
+            Assert.Contains(dumped, r => r.Operation == "LOP_BEGIN_XACT" && r.Spid is not null);
 
             var dumpedModify = dumped.Where(r => r.Operation == "LOP_MODIFY_COLUMNS").ToList();
             Assert.NotEmpty(dumpedModify);

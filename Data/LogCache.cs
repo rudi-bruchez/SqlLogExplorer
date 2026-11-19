@@ -63,6 +63,9 @@ public sealed class LogCache : IAsyncDisposable, IDisposable
                 LogRecordBytes  BLOB,
                 BeginTime       TEXT,
                 EndTime         TEXT,
+                LogRecordLength INTEGER,
+                Spid            INTEGER,
+                ParentTransactionId TEXT,
                 RowKey          TEXT
             );
             CREATE INDEX IF NOT EXISTS IX_LogRecords_AllocUnitName ON LogRecords(AllocUnitName);
@@ -91,12 +94,12 @@ public sealed class LogCache : IAsyncDisposable, IDisposable
                 (LSN, Operation, Context, TransactionId, AllocUnitName, RowLogContents0, RowLogContents1,
                  AllocUnitId, PartitionId, PageId, SlotId, OffsetInRow, ModifySize, NumElements,
                  Description, TransactionName, RowLogContents2, RowLogContents3, RowLogContents4, RowLogContents5, LogRecordBytes,
-                 BeginTime, EndTime)
+                 BeginTime, EndTime, LogRecordLength, Spid, ParentTransactionId)
             VALUES
                 ($lsn, $op, $ctx, $txid, $alloc, $rlc0, $rlc1,
                  $auid, $pid, $page, $slot, $off, $msize, $nel,
                  $desc, $txname, $rlc2, $rlc3, $rlc4, $rlc5, $lrb,
-                 $begin, $end);
+                 $begin, $end, $lrlen, $spid, $parent);
             """;
 
         var pLsn    = AddParam(cmd, "$lsn");
@@ -122,6 +125,9 @@ public sealed class LogCache : IAsyncDisposable, IDisposable
         var pLrb    = AddParam(cmd, "$lrb");
         var pBegin  = AddParam(cmd, "$begin");
         var pEnd    = AddParam(cmd, "$end");
+        var pLrLen  = AddParam(cmd, "$lrlen");
+        var pSpid   = AddParam(cmd, "$spid");
+        var pParent = AddParam(cmd, "$parent");
 
         long inserted = 0;
         cmd.Prepare();
@@ -151,6 +157,9 @@ public sealed class LogCache : IAsyncDisposable, IDisposable
             pLrb.Value    = (object?)r.LogRecordBytes ?? DBNull.Value;
             pBegin.Value  = (object?)r.BeginTime ?? DBNull.Value;
             pEnd.Value    = (object?)r.EndTime ?? DBNull.Value;
+            pLrLen.Value  = (object?)r.LogRecordLength ?? DBNull.Value;
+            pSpid.Value   = (object?)r.Spid ?? DBNull.Value;
+            pParent.Value = (object?)r.ParentTransactionId ?? DBNull.Value; // tel quel, non normalisé (spec04 §3)
             inserted += cmd.ExecuteNonQuery(); // 0 pour une ligne ignorée.
         }
 

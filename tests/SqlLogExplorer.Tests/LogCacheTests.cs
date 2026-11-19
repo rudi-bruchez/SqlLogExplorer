@@ -91,6 +91,27 @@ public class LogCacheTests
     }
 
     [Fact]
+    public async Task InsertBatchAsync_RoundTripsLengthSpidAndParent()
+    {
+        await using var cache = await LogCache.CreateAsync(TempDb());
+        var begin = new Models.LogRecord("0000002A:00000010:0001", "LOP_BEGIN_XACT", "LCX_NULL", "0000:0000056c", null, null, null)
+        {
+            LogRecordLength = 132, Spid = 73, ParentTransactionId = "0000:0000056b",
+        };
+        var plain = new Models.LogRecord("0000002A:00000010:0002", "LOP_COMMIT_XACT", "LCX_NULL", "0000:0000056c", null, null, null);
+        await cache.InsertBatchAsync(new[] { begin, plain });
+
+        var page = await new Data.LogQuery(cache.Connection).GetPageAsync(0, 10);
+
+        Assert.Equal(132, page[0].LogRecordLength);
+        Assert.Equal(73, page[0].Spid);
+        Assert.Equal("0000:0000056b", page[0].ParentTransactionId);
+        Assert.Null(page[1].LogRecordLength);
+        Assert.Null(page[1].Spid);
+        Assert.Null(page[1].ParentTransactionId);
+    }
+
+    [Fact]
     public async Task InsertBatchAsync_RoundTripsLogRecordBytes()
     {
         await using var cache = await LogCache.CreateAsync(TempDb());

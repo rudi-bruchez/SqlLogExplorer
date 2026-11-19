@@ -30,7 +30,7 @@ public sealed class LogQuery
         "SELECT LSN, Operation, Context, TransactionId, AllocUnitName, RowLogContents0, RowLogContents1, " +
         "AllocUnitId, PartitionId, PageId, SlotId, OffsetInRow, ModifySize, NumElements, " +
         "Description, TransactionName, RowLogContents2, RowLogContents3, RowLogContents4, RowLogContents5, LogRecordBytes, " +
-        "BeginTime, EndTime FROM LogRecords";
+        "BeginTime, EndTime, LogRecordLength, Spid, ParentTransactionId FROM LogRecords";
 
     // Enregistrements de données (spec03 §5) : le journal porte aussi des LCX_PFS et des LCX_INDEX_* qui citent l'AllocUnitId de la table.
     private const string DataRecords =
@@ -160,6 +160,7 @@ public sealed class LogQuery
             Description = Text(r, 14), TransactionName = Text(r, 15),
             RowLogContents2 = Bytes(r, 16), RowLogContents3 = Bytes(r, 17), RowLogContents4 = Bytes(r, 18), RowLogContents5 = Bytes(r, 19),
             LogRecordBytes = Bytes(r, 20), BeginTime = Text(r, 21), EndTime = Text(r, 22),
+            LogRecordLength = Int(r, 23), Spid = Int(r, 24), ParentTransactionId = Text(r, 25),
         };
     }
 
