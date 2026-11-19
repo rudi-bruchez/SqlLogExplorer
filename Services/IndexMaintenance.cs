@@ -49,7 +49,7 @@ public static class IndexMaintenance
                 // Sans construction (SET, DISABLE), l'ALTER INDEX n'est pas une maintenance et les familles restent libres.
                 if (BuildKind(taken) is not MaintenanceKind kind) continue;
                 Take(taken);
-                operations.Add(Operation(kind, taken, partial: !family.Top.HasEnd, inUserTransaction: false));
+                operations.Add(Operation(kind, taken, partial: !family.Top.HasEnd, inUserTransaction: false, endKnown: family.Top.HasEnd));
             }
 
         // Règle 3 : user_transaction qui contient une construction d'index ou une réorganisation.
@@ -60,7 +60,7 @@ public static class IndexMaintenance
                 var taken = InSpan(families, family);
                 Take(taken);
                 var kind = BuildKind(taken) ?? MaintenanceKind.Reorganize;
-                operations.Add(Operation(kind, taken, partial: !family.Top.HasEnd, inUserTransaction: true));
+                operations.Add(Operation(kind, taken, partial: !family.Top.HasEnd, inUserTransaction: true, endKnown: family.Top.HasEnd));
             }
 
         // Règle 2 : séries de réorganisation, toutes familles du SPID parcourues (les prises coupent la série).
@@ -69,7 +69,7 @@ public static class IndexMaintenance
             {
                 var last = run[^1];
                 var partial = run[0] == families[0] || last == families[^1] || !last.Top.HasEnd;
-                operations.Add(Operation(MaintenanceKind.Reorganize, run, partial, inUserTransaction: false));
+                operations.Add(Operation(MaintenanceKind.Reorganize, run, partial, inUserTransaction: false, endKnown: true));
             }
 
         return operations.OrderBy(o => o.FirstLsn, StringComparer.Ordinal).ToList();
@@ -139,6 +139,8 @@ public static class IndexMaintenance
         var runs = new List<List<Family>>();
         List<Family>? run = null;
         long? unit = null;
+        // Vrai quand l'unité courante de la série vient d'une famille MoveBlob : la phase LOB d'un index précède sa phase de pages.
+        var unitFromMoveBlob = false;
         for (var i = 0; i < families.Count; i++)
         {
             var family = families[i];
@@ -149,15 +151,20 @@ public static class IndexMaintenance
             }
 
             var cuts = run is not null && family.Unit is long u && unit is long current && u != current
-                && !(IsNamed(families[i - 1].Top, MoveBlob) && !IsNamed(family.Top, MoveBlob));
+                && !(unitFromMoveBlob && !IsNamed(family.Top, MoveBlob));
             if (run is null || cuts)
             {
                 run = [];
                 runs.Add(run);
                 unit = null;
+                unitFromMoveBlob = false;
             }
             run.Add(family);
-            if (family.Unit is not null) unit = family.Unit;
+            if (family.Unit is not null)
+            {
+                unit = family.Unit;
+                unitFromMoveBlob = IsNamed(family.Top, MoveBlob);
+            }
         }
         return runs;
     }
@@ -166,7 +173,8 @@ public static class IndexMaintenance
 
     private static bool IsNamed(TransactionFacts t, string name) => string.Equals(t.Name, name, StringComparison.Ordinal);
 
-    private static MaintenanceOperation Operation(MaintenanceKind kind, List<Family> families, bool partial, bool inUserTransaction)
+    private static MaintenanceOperation Operation(MaintenanceKind kind, List<Family> families, bool partial, bool inUserTransaction,
+        bool endKnown)
     {
         var members = families.SelectMany(f => f.Members).OrderBy(m => m.FirstLsn, StringComparer.Ordinal).ToList();
         var tops = families.Select(f => f.Top).OrderBy(t => t.FirstLsn, StringComparer.Ordinal).ToList();
@@ -176,7 +184,8 @@ public static class IndexMaintenance
             members.Select(m => m.FirstLsn).Min(StringComparer.Ordinal)!,
             members.Select(m => m.LastLsn).Max(StringComparer.Ordinal)!,
             tops[0].BeginTime,
-            tops.Select(t => t.EndTime).Where(e => e is not null).Max(StringComparer.Ordinal),
+            // Un ALTER INDEX ou une user_transaction sans fin dans le cache n'a pas de fin, quoi qu'en disent ses membres.
+            endKnown ? tops.Select(t => t.EndTime).Where(e => e is not null).Max(StringComparer.Ordinal) : null,
             members,
             members.Sum(m => m.Records),
             members.Sum(m => m.Bytes),

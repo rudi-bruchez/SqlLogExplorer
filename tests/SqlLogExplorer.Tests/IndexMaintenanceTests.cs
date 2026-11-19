@@ -136,6 +136,18 @@ public class IndexMaintenanceTests
     }
 
     [Fact]
+    public void Reorganize_MoveBlobThenFamilyWithoutUnitThenPages_SameOperation()
+    {
+        var ops = IndexMaintenance.Group([
+            Tx("M1", "MoveBlob", 70, null, 1, 2, unit: 5),
+            Tx("R1", "ReorderPages", 70, null, 3, 4),
+            Tx("R2", "ReorderPages", 70, null, 5, 6, unit: 1),
+        ]);
+
+        Assert.Equal(["M1", "R1", "R2"], Ids(Assert.Single(ops)));
+    }
+
+    [Fact]
     public void Reorganize_FamilyWithoutUnit_DoesNotCut()
     {
         var middle = IndexMaintenance.Group([
@@ -269,6 +281,22 @@ public class IndexMaintenanceTests
         Assert.True(Assert.Single(IndexMaintenance.Group(UserTransaction(false))).Partial);
         Assert.False(Assert.Single(IndexMaintenance.Group(Rebuild(true))).Partial);
         Assert.False(Assert.Single(IndexMaintenance.Group(UserTransaction(true))).Partial);
+    }
+
+    [Fact]
+    public void PartialRebuild_HasNoEnd()
+    {
+        var ops = IndexMaintenance.Group([
+            Tx("A", "ALTER INDEX", 60, null, 1, 10, end: false),
+            Tx("B", "offline index build", 60, "A", 2, 8),
+            Tx("C", "BulkExtentAlloc", 60, null, 3, 9),
+        ]);
+
+        var op = Assert.Single(ops);
+        Assert.Equal(["A", "B", "C"], Ids(op));
+        Assert.True(op.Partial);
+        Assert.Null(op.End);
+        Assert.Equal(Time(1), op.Begin);
     }
 
     [Fact]
