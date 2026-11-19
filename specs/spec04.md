@@ -83,7 +83,7 @@ A tab "Index maintenance" next to "By operation type" and "By object", filled at
 
 A line above the grid: the total log record bytes imported, and the bytes and share of all the operations found, counted once each (§4).
 
-Columns: Kind (`Rebuild offline`, `Rebuild online`, `Reorganize`), Objects, Begin, End, Transactions, Records, Log bytes (shown in KB/MB/GB, sorted on the number), Share of imported log (percent), Notes (`partial`, `in a user transaction`). Sorted by log bytes, descending.
+Columns: Kind (`Rebuild offline`, `Rebuild online`, `Reorganize`), Objects, Begin, End, Transactions, Records, Log bytes (shown in KB/MB/GB, sorted on the number), Share of imported log (percent), Notes (`may extend beyond the import` for a partial reorganize, `not committed in the import` for any other partial operation, `in a user transaction`). Sorted by log bytes, descending.
 
 A note under the grid: "Bytes are those of the log records; the log file receives 3 to 16 % more. Records written outside a transaction during an operation are counted with it. Consecutive reorganizes of the same index appear as one line. A rebuild that started before the import is not listed."
 
@@ -105,7 +105,7 @@ Unit tests of `IndexMaintenance.Group` on synthetic transactions, one per rule a
 
 `LogCacheTests`: the three columns round-trip.
 
-Integration test on the four versions, live and from a log backup. The table of §2, smaller, fragmented by inserting in many small batches of random keys and checked by `avg_fragmentation_in_percent > 30` before the reorganize statements. The script records the session's `@@SPID` and the LSN before and after each statement, and runs: an offline rebuild of `ALL`, an online rebuild of one index, `SET`, a reorganize of `ALL`, then two reorganizes of two tables one after the other, with DML from a second session during the online rebuild. It asserts the number of operations of each statement (one per index for a reorganize of `ALL`), the kind and the objects of each, and that the bytes of the operations of one statement, together, lie between 95 % and 101 % of a reference measured by the script itself: the bytes of the transactions of that SPID whose begin record is between the statement's two LSNs (descendants included), plus the records outside any transaction between those two LSNs. The upper bound is what catches a merge with the next statement.
+Integration test on the four versions, live and from a log backup. The table of §2, smaller, fragmented by inserting in many small batches of random keys and checked by `avg_fragmentation_in_percent > 30` before the reorganize statements. The script records the session's `@@SPID` and the LSN before and after each statement, and runs: an offline rebuild of `ALL`, an online rebuild of one index, `SET`, a reorganize of `ALL`, then two reorganizes of two tables one after the other, with DML from a second session during the online rebuild. It asserts the number of operations of each statement (one per index for a reorganize of `ALL`), the kind and the objects of each, and that the bytes of the operations of one statement, together, lie between 95 % and 101 % of a reference measured by the script itself: the bytes of the transactions of that SPID whose begin record is between the statement's two LSNs (descendants included), plus the records outside any transaction between the first and last LSN of those transactions, inside the window. Counting every record outside a transaction in the window included the ghost cleanup of the second session's updates on the rebuilt table, written before the rebuild's first transaction, and gave 81.5 % on 2022 (implementation, task 6): those records belong to the other session, and §4 rightly gives them to no operation. The upper bound is what catches a merge with the next statement.
 
 ## 8. Documentation
 
@@ -128,5 +128,7 @@ Five readers on 2026-11-18: Vibe (Mistral Large, directive prompt), Vibe (GLM, n
 - Nesting two levels deep inside a rebuild (Mistral): §4 follows the parent chain up to the top-level ancestor.
 
 The review of the plan (2026-11-19) changed two rules: rule 3 takes the top-level families in its span, after an online rebuild inside `BEGIN TRAN` was found to keep 0.5 % of its bytes; §5 shows the units of one index once.
+
+The implementation (2026-11-19) changed four points, each found by running: the name of a unit seen both as `Unknown Alloc Unit` and as its real name is the real name (§4 query); a family with no unit between a `MoveBlob` family and the page phase does not cut the run (rule 2); a partial operation of rule 1 or 3 has no end time; the reference of §7 counts records outside a transaction only within the span of the session's transactions.
 
 Rejected: `FnDumpDblogQuery` would fail on all four versions with 63 `DEFAULT` arguments and need 62 (Mistral). Measured again on 2022 CU26 and 2025 CU7 on 2026-11-18: 63 returns the rows, 62 fails with Msg 313 (insufficient arguments), 64 with Msg 8144 (too many). codex and Claude also read backups through that call.
