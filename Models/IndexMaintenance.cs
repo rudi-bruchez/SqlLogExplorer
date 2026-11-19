@@ -45,3 +45,6 @@ public sealed record MaintenanceOperation(
     public IReadOnlyList<MaintenanceObject> Objects { get; init; } = [];
     public int OtherObjects { get; init; }
 }
+
+/// <summary>Le volume de journal de l'import, celui des opérations de maintenance et ces opérations, par octets décroissants (spec04 §6).</summary>
+public sealed record MaintenanceReport(long TotalBytes, long MaintenanceBytes, IReadOnlyList<MaintenanceOperation> Operations);

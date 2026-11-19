@@ -1,6 +1,10 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
+using SqlLogExplorer.Data;
 using SqlLogExplorer.Models;
 
 namespace SqlLogExplorer.Services;
@@ -12,6 +16,8 @@ public static class IndexMaintenance
     private const string UserTransaction = "user_transaction";
     private const string OfflineBuild = "offline index build";
     private const string MoveBlob = "MoveBlob";
+    private const string UnknownAllocUnit = "Unknown Alloc Unit";
+    private const string SystemPrefix = "sys.";
 
     private static readonly HashSet<string> OnlineBuildNames = new(StringComparer.Ordinal) { "ONLINE_INDEX_DDL", "OnlineIndexInsertTxn" };
 
@@ -30,6 +36,96 @@ public static class IndexMaintenance
         public bool Taken { get; set; }
 
         public bool Contains(Func<string, bool> name) => Members.Any(m => m.Name is string n && name(n));
+    }
+
+    /// <summary>Le rapport complet : opérations, enregistrements hors transaction de leurs parties exclusives, objets (spec04 §4, §5, §6).</summary>
+    public static async Task<MaintenanceReport> AnalyzeAsync(LogQuery query, CancellationToken ct = default)
+    {
+        var facts = await query.GetTransactionFactsAsync(ct);
+        var total = await query.GetTotalLogBytesAsync(ct);
+        var grouped = Group(facts);
+        var ranges = ExclusiveRanges(grouped.Select(o => (o.FirstLsn, o.LastLsn)).ToList());
+
+        var operations = new List<MaintenanceOperation>(grouped.Count);
+        for (var i = 0; i < grouped.Count; i++)
+        {
+            var op = grouped[i];
+            // Un enregistrement hors transaction n'est compté que dans l'étendue d'une seule opération.
+            foreach (var (from, to) in ranges[i])
+            {
+                var (records, bytes) = await query.SumOutsideTransactionsAsync(from, to, ct);
+                op = op with { Records = op.Records + records, Bytes = op.Bytes + bytes };
+            }
+            var (objects, others) = Objects(op);
+            operations.Add(op with { Objects = objects, OtherObjects = others });
+        }
+
+        var sorted = operations.OrderByDescending(o => o.Bytes).ThenBy(o => o.FirstLsn, StringComparer.Ordinal).ToList();
+        return new MaintenanceReport(total, sorted.Sum(o => o.Bytes), sorted);
+    }
+
+    /// <summary>Le nom de l'unité d'allocation, ou son identifiant quand le nom est absent, vide ou Unknown Alloc Unit.</summary>
+    public static string DisplayName(long allocUnitId, string? allocUnitName)
+        => IsUsable(allocUnitName) ? allocUnitName! : allocUnitId.ToString(CultureInfo.InvariantCulture);
+
+    private static bool IsUsable(string? allocUnitName)
+        => !string.IsNullOrEmpty(allocUnitName) && !string.Equals(allocUnitName, UnknownAllocUnit, StringComparison.Ordinal);
+
+    /// <summary>Les objets d'une opération qui ont au moins 1 % de ses octets, par octets décroissants, et le nombre des autres.
+    /// Les unités système (nom en sys.) sont écartées ; les unités affichées sous le même nom n'en font qu'un.</summary>
+    public static (IReadOnlyList<MaintenanceObject> Objects, int Others) Objects(MaintenanceOperation op)
+    {
+        var units = op.Transactions.SelectMany(t => t.Units)
+            .GroupBy(u => u.AllocUnitId)
+            // Le nom utilisable d'une unité l'emporte sur un nom vide ou Unknown Alloc Unit vu dans une autre transaction.
+            .Select(g => (Id: g.Key, Name: g.Select(u => u.AllocUnitName).FirstOrDefault(IsUsable) ?? g.First().AllocUnitName,
+                Bytes: g.Sum(u => u.Bytes)))
+            .Where(u => u.Name is null || !u.Name.StartsWith(SystemPrefix, StringComparison.Ordinal));
+
+        var objects = units
+            .GroupBy(u => DisplayName(u.Id, u.Name), StringComparer.Ordinal)
+            .Select(g => new MaintenanceObject(
+                g.OrderByDescending(u => u.Bytes).ThenBy(u => u.Id).First().Id, g.Key, g.Sum(u => u.Bytes)))
+            .ToList();
+
+        var listed = objects.Where(o => o.Bytes * 100 >= op.Bytes)
+            .OrderByDescending(o => o.Bytes).ThenBy(o => o.Display, StringComparer.Ordinal).ToList();
+        return (listed, objects.Count - listed.Count);
+    }
+
+    /// <summary>Pour chaque étendue, ses parties couvertes par aucune autre, bornes prises parmi celles des étendues.
+    /// Une partie peut contenir une borne partagée : c'est le LSN d'un enregistrement de transaction, sans effet sur une somme
+    /// d'enregistrements hors transaction.</summary>
+    public static IReadOnlyList<IReadOnlyList<(string From, string To)>> ExclusiveRanges(IReadOnlyList<(string First, string Last)> spans)
+    {
+        var result = new List<IReadOnlyList<(string From, string To)>>(spans.Count);
+        for (var i = 0; i < spans.Count; i++)
+        {
+            var (first, last) = spans[i];
+            var others = spans.Where((s, j) => j != i
+                    && string.CompareOrdinal(s.First, last) <= 0 && string.CompareOrdinal(s.Last, first) >= 0)
+                .OrderBy(s => s.First, StringComparer.Ordinal);
+
+            var parts = new List<(string From, string To)>();
+            var cursor = first;
+            // Vrai quand le curseur est la fin d'une autre étendue : ce point-là n'est plus exclusif.
+            var covered = false;
+            foreach (var other in others)
+            {
+                if (string.CompareOrdinal(other.First, cursor) > 0)
+                    parts.Add((cursor, other.First));
+                if (string.CompareOrdinal(other.Last, cursor) >= 0)
+                {
+                    cursor = other.Last;
+                    covered = true;
+                }
+            }
+            var end = string.CompareOrdinal(cursor, last);
+            if (end < 0 || (end == 0 && !covered))
+                parts.Add((cursor, last));
+            result.Add(parts);
+        }
+        return result;
     }
 
     /// <summary>Les opérations trouvées, triées par premier LSN.</summary>

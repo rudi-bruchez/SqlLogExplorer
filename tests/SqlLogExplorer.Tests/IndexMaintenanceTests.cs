@@ -1,3 +1,4 @@
+using SqlLogExplorer.Data;
 using SqlLogExplorer.Models;
 using SqlLogExplorer.Services;
 
@@ -335,5 +336,125 @@ public class IndexMaintenanceTests
         Assert.True(op.Partial);
         Assert.False(op.InUserTransaction);
         Assert.Equal(["S1"], Ids(op));
+    }
+
+    // Une opération synthétique dont la seule transaction a les unités données.
+    private static MaintenanceOperation OpWithUnits(long bytes, params UnitBytes[] units)
+    {
+        var tx = new TransactionFacts("T", "ReorderPages", 70, null, Lsn(1), Lsn(2), null, null, true, true, 1, bytes, units);
+        return new MaintenanceOperation(MaintenanceKind.Reorganize, 70, Lsn(1), Lsn(2), null, null, [tx], 1, bytes, false, false);
+    }
+
+    [Fact]
+    public void DisplayName_UnknownAllocUnit_ShowsId()
+    {
+        Assert.Equal("72057594052608000", IndexMaintenance.DisplayName(72057594052608000, "Unknown Alloc Unit"));
+        Assert.Equal("5", IndexMaintenance.DisplayName(5, ""));
+        Assert.Equal("dbo.T.IX_n", IndexMaintenance.DisplayName(5, "dbo.T.IX_n"));
+    }
+
+    [Fact]
+    public void Objects_SystemUnitsLeftOutAndOnePercentThreshold()
+    {
+        var op = OpWithUnits(1000,
+            new UnitBytes(1, "dbo.T.PK", 900), new UnitBytes(2, "dbo.T.IX_n", 95),
+            new UnitBytes(3, "sys.sysrowsets", 3), new UnitBytes(77, "", 2));
+
+        var (objects, others) = IndexMaintenance.Objects(op);
+
+        Assert.Equal(["dbo.T.PK", "dbo.T.IX_n"], objects.Select(o => o.Display));
+        Assert.Equal([900L, 95L], objects.Select(o => o.Bytes));
+        Assert.Equal(1, others);
+    }
+
+    [Fact]
+    public void Objects_SameNameShownOnce()
+    {
+        var op = OpWithUnits(900, new UnitBytes(5, "dbo.L.PK", 600), new UnitBytes(6, "dbo.L.PK", 300));
+
+        var (objects, others) = IndexMaintenance.Objects(op);
+
+        var obj = Assert.Single(objects);
+        Assert.Equal("dbo.L.PK", obj.Display);
+        Assert.Equal(900, obj.Bytes);
+        Assert.Equal(5, obj.AllocUnitId);
+        Assert.Equal(0, others);
+    }
+
+    [Fact]
+    public void ExclusiveRanges_DisjointSpansKeepThemselves()
+    {
+        var ranges = IndexMaintenance.ExclusiveRanges([("A", "B"), ("C", "D")]);
+
+        Assert.Equal([("A", "B")], ranges[0]);
+        Assert.Equal([("C", "D")], ranges[1]);
+    }
+
+    [Fact]
+    public void ExclusiveRanges_OverlapBelongsToNone()
+    {
+        var ranges = IndexMaintenance.ExclusiveRanges([("A", "D"), ("C", "F")]);
+
+        Assert.Equal([("A", "C")], ranges[0]);
+        Assert.Equal([("D", "F")], ranges[1]);
+    }
+
+    [Fact]
+    public void ExclusiveRanges_NestedSpanOwnsNothing()
+    {
+        var ranges = IndexMaintenance.ExclusiveRanges([("A", "F"), ("B", "C")]);
+
+        Assert.Equal([("A", "B"), ("C", "F")], ranges[0]);
+        Assert.Empty(ranges[1]);
+    }
+
+    [Fact]
+    public async Task AnalyzeAsync_TotalCountsEachRecordOnce()
+    {
+        // Deux réorganisations qui se chevauchent (SPID 70 de 0x10 à 0x30, SPID 71 de 0x20 à 0x40) et trois
+        // enregistrements hors transaction : un dans chaque partie exclusive, un dans le chevauchement.
+        static LogRecord Begin(int lsn, string tx, int spid) =>
+            new($"00000001:{lsn:X8}:0001", "LOP_BEGIN_XACT", "LCX_NULL", tx, null, null, null)
+                { TransactionName = "ReorderPages", Spid = spid, LogRecordLength = 100, BeginTime = "2026/11/19 10:00:00:000" };
+        static LogRecord Work(int lsn, string tx, long unit, string name) =>
+            new($"00000001:{lsn:X8}:0001", "LOP_MODIFY_ROW", "LCX_INDEX_LEAF", tx, name, null, null)
+                { AllocUnitId = unit, LogRecordLength = 1000 };
+        static LogRecord Commit(int lsn, string tx) =>
+            new($"00000001:{lsn:X8}:0001", "LOP_COMMIT_XACT", "LCX_NULL", tx, null, null, null)
+                { LogRecordLength = 50, EndTime = "2026/11/19 10:00:01:000" };
+        static LogRecord Outside(int lsn, int length) =>
+            new($"00000001:{lsn:X8}:0001", "LOP_MIGRATE_LOCKS", "LCX_NULL", "0000:00000000", null, null, null) { LogRecordLength = length };
+
+        await using var cache = await LogCache.CreateAsync(Path.Combine(Path.GetTempPath(), $"sqllogexp_{Guid.NewGuid():N}.db"));
+        await cache.InsertBatchAsync(new List<LogRecord>
+        {
+            Begin(0x10, "0000:00000100", 70),
+            Work(0x12, "0000:00000100", 1, "dbo.A.PK"),
+            Outside(0x15, 40),
+            Begin(0x20, "0000:00000200", 71),
+            Work(0x22, "0000:00000200", 2, "dbo.B.PK"),
+            Outside(0x25, 60),
+            Commit(0x30, "0000:00000100"),
+            Outside(0x35, 80),
+            Commit(0x40, "0000:00000200"),
+        });
+
+        var report = await IndexMaintenance.AnalyzeAsync(new LogQuery(cache.Connection));
+
+        Assert.Equal(2, report.Operations.Count);
+        var a = Assert.Single(report.Operations, o => o.Spid == 70);
+        var b = Assert.Single(report.Operations, o => o.Spid == 71);
+        Assert.Equal(4, a.Records);
+        Assert.Equal(1150 + 40, a.Bytes);
+        Assert.Equal(4, b.Records);
+        Assert.Equal(1150 + 80, b.Bytes);
+        // Triées par octets décroissants.
+        Assert.Same(b, report.Operations[0]);
+        Assert.Equal("dbo.A.PK", Assert.Single(a.Objects).Display);
+        Assert.Equal(2 * 1150 + 40 + 60 + 80, report.TotalBytes);
+        Assert.Equal(a.Bytes + b.Bytes, report.MaintenanceBytes);
+        Assert.True(report.MaintenanceBytes <= report.TotalBytes);
+        // L'enregistrement du chevauchement n'est compté dans aucune opération.
+        Assert.Equal(60, report.TotalBytes - report.MaintenanceBytes);
     }
 }
