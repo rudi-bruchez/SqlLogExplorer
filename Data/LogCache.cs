@@ -69,7 +69,9 @@ public sealed class LogCache : IAsyncDisposable, IDisposable
                 RowKey          TEXT
             );
             CREATE INDEX IF NOT EXISTS IX_LogRecords_AllocUnitName ON LogRecords(AllocUnitName);
-            CREATE INDEX IF NOT EXISTS IX_LogRecords_TransactionId ON LogRecords(TransactionId);
+            -- TransactionId puis LSN : les enregistrements hors transaction d'une étendue se cherchent sur les deux colonnes ;
+            -- LogRecordLength rend l'index couvrant pour leur somme (spec04). Le préfixe sert aussi les recherches par transaction.
+            CREATE INDEX IF NOT EXISTS IX_LogRecords_TransactionId_Lsn ON LogRecords(TransactionId, LSN, LogRecordLength);
             CREATE INDEX IF NOT EXISTS IX_LogRecords_Operation     ON LogRecords(Operation);
             CREATE INDEX IF NOT EXISTS IX_LogRecords_Alloc_Op      ON LogRecords(AllocUnitName, Operation);
             CREATE INDEX IF NOT EXISTS IX_LogRecords_Alloc_Key_Lsn       ON LogRecords(AllocUnitId, RowKey, LSN);
