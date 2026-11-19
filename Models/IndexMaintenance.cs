@@ -20,3 +20,28 @@ public sealed record TransactionFacts(
     long Records,
     long Bytes,
     IReadOnlyList<UnitBytes> Units);
+
+/// <summary>Nature d'une opération de maintenance d'index (spec04 §4).</summary>
+public enum MaintenanceKind { RebuildOffline, RebuildOnline, Reorganize }
+
+/// <summary>Un objet touché par une opération et ses octets de journal (spec04 §5).</summary>
+public sealed record MaintenanceObject(long AllocUnitId, string Display, long Bytes);
+
+/// <summary>Une reconstruction ou une réorganisation trouvée dans le journal : ses transactions (imbriquées comprises),
+/// leurs enregistrements et leurs octets (spec04 §4). Partial : l'opération peut déborder de l'import.</summary>
+public sealed record MaintenanceOperation(
+    MaintenanceKind Kind,
+    int Spid,
+    string FirstLsn,
+    string LastLsn,
+    string? Begin,
+    string? End,
+    IReadOnlyList<TransactionFacts> Transactions,
+    long Records,
+    long Bytes,
+    bool Partial,
+    bool InUserTransaction)
+{
+    public IReadOnlyList<MaintenanceObject> Objects { get; init; } = [];
+    public int OtherObjects { get; init; }
+}
