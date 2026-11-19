@@ -180,6 +180,27 @@
                     </DataGrid.Columns>
                 </DataGrid>
             </TabItem>
+            <TabItem Header="Index maintenance">
+                <DockPanel>
+                    <TextBlock DockPanel.Dock="Top" Margin="4" Text="{Binding Statistics.MaintenanceSummary}"/>
+                    <TextBlock DockPanel.Dock="Bottom" Margin="4" TextWrapping="Wrap"
+                               Text="Bytes are those of the log records; the log file receives 3 to 16 % more. Records written outside a transaction during an operation are counted with it. Consecutive reorganizes of the same index appear as one line. A rebuild that started before the import is not listed."/>
+                    <DataGrid ItemsSource="{Binding Statistics.MaintenanceRows}" IsReadOnly="True"
+                              AutoGenerateColumns="False" CanUserSortColumns="True">
+                        <DataGrid.Columns>
+                            <DataGridTextColumn Header="Kind" Binding="{Binding Kind}" Width="130"/>
+                            <DataGridTextColumn Header="Objects" Binding="{Binding Objects}" Width="*"/>
+                            <DataGridTextColumn Header="Begin" Binding="{Binding Begin}" Width="170"/>
+                            <DataGridTextColumn Header="End" Binding="{Binding End}" Width="170"/>
+                            <DataGridTextColumn Header="Transactions" Binding="{Binding Transactions}" Width="110"/>
+                            <DataGridTextColumn Header="Records" Binding="{Binding Records}" Width="100"/>
+                            <DataGridTextColumn Header="Log bytes" Binding="{Binding BytesText}" SortMemberPath="Bytes" Width="100"/>
+                            <DataGridTextColumn Header="Share" Binding="{Binding ShareText}" SortMemberPath="Share" Width="80"/>
+                            <DataGridTextColumn Header="Notes" Binding="{Binding Notes}" Width="260"/>
+                        </DataGrid.Columns>
+                    </DataGrid>
+                </DockPanel>
+            </TabItem>
         </TabControl>
     </DockPanel>
 

@@ -2,6 +2,7 @@ using System.Collections.ObjectModel;
 using System.Threading.Tasks;
 using SqlLogExplorer.Data;
 using SqlLogExplorer.Models;
+using SqlLogExplorer.Services;
 
 namespace SqlLogExplorer.ViewModels;
 
@@ -15,6 +16,16 @@ public sealed class StatisticsViewModel : ViewModelBase
     public ObservableCollection<OperationCount> ByOperation { get; } = new();
     public ObservableCollection<ObjectCount> ByObject { get; } = new();
 
+    // Pas nommée IndexMaintenance : le nom masquerait la classe statique du même nom dans le view model.
+    public ObservableCollection<IndexMaintenanceRow> MaintenanceRows { get; } = new();
+
+    private string _maintenanceSummary = "";
+    public string MaintenanceSummary
+    {
+        get => _maintenanceSummary;
+        private set => SetProperty(ref _maintenanceSummary, value);
+    }
+
     public async Task RefreshAsync(LogFilter? filter = null)
     {
         var byOp = await _query.CountByOperationAsync(filter);
@@ -25,5 +36,13 @@ public sealed class StatisticsViewModel : ViewModelBase
 
         ByObject.Clear();
         foreach (var x in byObj) ByObject.Add(x);
+
+        var report = await IndexMaintenance.AnalyzeAsync(_query);
+        double Share(long bytes) => report.TotalBytes == 0 ? 0 : 100.0 * bytes / report.TotalBytes;
+        MaintenanceRows.Clear();
+        foreach (var op in report.Operations) MaintenanceRows.Add(new IndexMaintenanceRow(op, Share(op.Bytes)));
+        MaintenanceSummary = $"Imported log record bytes: {IndexMaintenanceRow.FormatBytes(report.TotalBytes)}. " +
+            $"Index maintenance: {IndexMaintenanceRow.FormatBytes(report.MaintenanceBytes)} " +
+            $"({IndexMaintenanceRow.FormatShare(Share(report.MaintenanceBytes))}).";
     }
 }
