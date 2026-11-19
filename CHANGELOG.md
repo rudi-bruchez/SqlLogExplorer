@@ -15,7 +15,7 @@ All notable changes to this project are documented in this file. The format foll
 - `Log Reserve` and the size of the `.ldf` file are not shown.
 - Consecutive reorganizes of one index appear as one line.
 - A rebuild that started before the import is not listed.
-- `ALTER TABLE ... REBUILD`, `DROP_EXISTING`, `DBCC DBREINDEX`, `DBCC INDEXDEFRAG`, resumable rebuilds and columnstore indexes are not recognized.
+- Plain `CREATE INDEX`, `ALTER TABLE ... REBUILD`, `DROP_EXISTING`, `DBCC DBREINDEX`, `DBCC INDEXDEFRAG`, resumable rebuilds and columnstore indexes are not recognized.
 - The release of the old tree after a rebuild (`DeferredAllocUnitDrop::Process`) is not attributed to it.
 - In an offline import, objects are shown by allocation unit id.
 

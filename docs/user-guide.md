@@ -136,7 +136,7 @@ Both are computed once, at the end of an import.
 
 The `Index maintenance` tab answers one question: how much of the imported log did index rebuilds and reorganizes write? It is computed once, at the end of an import, on the whole import (the records filter does not apply), like the other statistics tabs.
 
-One line is one rebuild statement, or, for a reorganize, one index. A rebuild statement (`ALTER INDEX ... REBUILD`, `CREATE INDEX`) is recognized by the transactions it opens, offline or online. A reorganize (`ALTER INDEX ... REORGANIZE`) is recognized by its page operations and listed per index. Consecutive reorganizes of the same index are merged into one line.
+One line is one rebuild statement, or, for a reorganize, one index. A rebuild statement (`ALTER INDEX ... REBUILD`) is recognized by the transactions it opens, offline or online. A reorganize (`ALTER INDEX ... REORGANIZE`) is recognized by its page operations and listed per index. Consecutive reorganizes of the same index are merged into one line.
 
 A summary line above the grid gives the total log record bytes imported, then the bytes and the share of all the operations found, each counted once.
 
@@ -148,17 +148,17 @@ A summary line above the grid gives the total log record bytes imported, then th
 - `Transactions` and `Records`: how many transactions and log records the operation includes.
 - `Log bytes`: the sum of the log record lengths, shown in KB, MB or GB and sorted on the number.
 - `Share`: the part of the imported log's record bytes that the operation wrote, as a percentage.
-- `Notes`: `may extend beyond the import` (a reorganize at the edge of the import, which may have started earlier or continued later), `not committed in the import` (a rebuild with no commit in the import), and `in a user transaction` (the statement ran inside a transaction of the user's own).
+- `Notes`: `may extend beyond the import` (a reorganize at the edge of the import, which may have started earlier or continued later), `not committed in the import` (an operation with no commit in the import), and `in a user transaction` (the statement ran inside a transaction of the user's own). An operation marked `in a user transaction` counts every top-level transaction of that session within the span of the user transaction, so it may include other work of that transaction.
 
 The lines are sorted by log bytes, largest first, and each column can be sorted again.
 
 ### Reading the share for a customer
 
-`Share` answers the question of how much of the log a maintenance window generated. A reorganize at 40 % of an hour of log tells the customer that the log backups of that hour are mostly maintenance. Compare the share with the time the operation took (`Begin` to `End`) and with the log backup schedule. The unit is the log record, not the file: see the first limit below.
+`Share` is the part of the imported log record bytes that the operation wrote. Hypothetically, if the import covers one hour of log and a line shows 40 %, that operation wrote 40 % of the log record bytes of that hour. Compare the share with the time the operation took (`Begin` to `End`) and with the log backup schedule. The unit is the log record, not the file: see the first limit below.
 
-### Measured accuracy
+### Accuracy of the figures
 
-On SQL Server 2017 to 2025, the operations of a statement matched the log record bytes written by its session to within 0.1 %. Records written outside any transaction (page allocation work, for instance) are counted with an operation only inside its span. Ghost record cleanup caused by other sessions' DML before the first transaction of a rebuild is therefore not attributed to it.
+In the integration scenario (`tests/SqlLogExplorer.Tests/Integration/IndexMaintenanceIntegrationTests.cs`) on SQL Server 2017, 2019, 2022 and 2025, the operations of each statement came within 0.1 % of the log record bytes its session wrote, with concurrent DML on another table. Records written outside any transaction are counted with an operation only inside its span. When another session's DML hits the rebuilt table, the ghost cleanup it causes before the rebuild's first transaction is not attributed to the rebuild (measured on SQL Server 2022).
 
 ### Limits
 
@@ -166,7 +166,7 @@ On SQL Server 2017 to 2025, the operations of a statement matched the log record
 - `Log Reserve`, the space reserved for a rollback, and the size or growth of the `.ldf` file are not shown.
 - Consecutive reorganizes of one index appear as one line.
 - A rebuild that started before the import is not listed.
-- These are not recognized: `ALTER TABLE ... REBUILD`, `CREATE INDEX ... WITH (DROP_EXISTING = ON)`, `DBCC DBREINDEX`, `DBCC INDEXDEFRAG`, resumable rebuilds and columnstore indexes.
+- These are not recognized: plain `CREATE INDEX`, `ALTER TABLE ... REBUILD`, `CREATE INDEX ... WITH (DROP_EXISTING = ON)`, `DBCC DBREINDEX`, `DBCC INDEXDEFRAG`, resumable rebuilds and columnstore indexes.
 - The release of the old tree after a rebuild (`DeferredAllocUnitDrop::Process`) runs on a background session after the commit and is not attributed to the operation (0.34 % of an offline rebuild of 79 MB on SQL Server 2022).
 - In an offline import, objects are shown by allocation unit id, because the log backup has no names.
 
