@@ -266,6 +266,65 @@ public class IndexMaintenanceTests
         Assert.Equal(200 + OneMb, op.Bytes);
     }
 
+    // Une reconstruction en ligne coupée par la fin de l'import : l'ouvrante (sans fin) et sa ONLINE_INDEX_DDL imbriquée
+    // s'arrêtent au LSN 3, puis 100 OnlineIndexInsertTxn de premier niveau du même SPID suivent, et une transaction d'un autre SPID.
+    private static IReadOnlyList<TransactionFacts> CutOnlineRebuild(string openerName, int spid)
+    {
+        var list = new List<TransactionFacts>
+        {
+            Tx("O", openerName, spid, null, 1, 3, end: false, bytes: 100),
+            Tx("D", "ONLINE_INDEX_DDL", spid, "O", 2, 3, bytes: 2000),
+        };
+        for (var i = 0; i < 100; i++)
+            list.Add(Tx($"I{i}", "OnlineIndexInsertTxn", spid, null, 10 + 2 * i, 11 + 2 * i, bytes: 100_000));
+        list.Add(Tx("X", "UPDATE", spid + 1, null, 50, 51));
+        return list;
+    }
+
+    [Fact]
+    public void OnlineRebuild_CutByEndOfImport_TakesLaterInsertTxn()
+    {
+        var op = Assert.Single(IndexMaintenance.Group(CutOnlineRebuild("ALTER INDEX", 60)));
+
+        Assert.Equal(MaintenanceKind.RebuildOnline, op.Kind);
+        Assert.True(op.Partial);
+        Assert.False(op.InUserTransaction);
+        Assert.Equal(102, op.Transactions.Count);
+        Assert.DoesNotContain("X", Ids(op));
+        Assert.Equal(100 + 2000 + 100 * 100_000L, op.Bytes);
+        Assert.Equal(Lsn(1), op.FirstLsn);
+        Assert.Equal(Lsn(11 + 2 * 99), op.LastLsn);
+        Assert.Null(op.End);
+    }
+
+    [Fact]
+    public void OnlineRebuildInOpenUserTransaction_CutByEndOfImport_TakesLaterInsertTxn()
+    {
+        var op = Assert.Single(IndexMaintenance.Group(CutOnlineRebuild("user_transaction", 70)));
+
+        Assert.Equal(MaintenanceKind.RebuildOnline, op.Kind);
+        Assert.True(op.Partial);
+        Assert.True(op.InUserTransaction);
+        Assert.Equal(102, op.Transactions.Count);
+        Assert.DoesNotContain("X", Ids(op));
+        Assert.Equal(100 + 2000 + 100 * 100_000L, op.Bytes);
+        Assert.Equal(Lsn(11 + 2 * 99), op.LastLsn);
+        Assert.Null(op.End);
+    }
+
+    [Fact]
+    public void CommittedRebuild_SpanStopsAtItsLastLsn()
+    {
+        // Validée, l'ouvrante garde son étendue : une OnlineIndexInsertTxn du même SPID après elle n'est pas prise.
+        var ops = IndexMaintenance.Group([
+            Tx("A", "ALTER INDEX", 60, null, 1, 3),
+            Tx("D", "ONLINE_INDEX_DDL", 60, "A", 2, 3),
+            Tx("I", "OnlineIndexInsertTxn", 60, null, 10, 11),
+        ]);
+
+        Assert.Equal(["A", "D"], Ids(Assert.Single(ops)));
+    }
+
     [Fact]
     public void Partial_RebuildOrUserTransactionWithoutCommit()
     {

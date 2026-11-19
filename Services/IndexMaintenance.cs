@@ -212,11 +212,31 @@ public static class IndexMaintenance
         return bytes.OrderByDescending(u => u.Bytes).ThenBy(u => u.Id).Select(u => (long?)u.Id).FirstOrDefault();
     }
 
-    /// <summary>Les familles libres du SPID dont le premier LSN est dans l'étendue de celle qui ouvre l'opération, elle comprise.</summary>
+    /// <summary>Les familles libres du SPID dont le premier LSN est dans l'étendue de celle qui ouvre l'opération, elle comprise.
+    /// Sans validation ni annulation dans le cache, l'étendue va jusqu'au dernier LSN de la dernière famille du SPID : une session
+    /// exécute une instruction à la fois, et celle-ci tournait encore à la fin de l'import (spec04 §4, règles 1 et 3).
+    /// Les familles sont triées par premier LSN : recherche dichotomique du début, puis parcours tant qu'on reste dans l'étendue.</summary>
     private static List<Family> InSpan(List<Family> families, Family opener)
-        => families.Where(f => !f.Taken
-            && string.CompareOrdinal(f.Top.FirstLsn, opener.Top.FirstLsn) >= 0
-            && string.CompareOrdinal(f.Top.FirstLsn, opener.Top.LastLsn) <= 0).ToList();
+    {
+        var first = opener.Top.FirstLsn;
+        var last = opener.Top.LastLsn;
+        if (!opener.Top.HasEnd && string.CompareOrdinal(families[^1].Top.LastLsn, last) > 0)
+            last = families[^1].Top.LastLsn;
+
+        // Premier indice dont le premier LSN n'est pas avant celui de l'ouvrante.
+        int lo = 0, hi = families.Count;
+        while (lo < hi)
+        {
+            var mid = lo + (hi - lo) / 2;
+            if (string.CompareOrdinal(families[mid].Top.FirstLsn, first) < 0) lo = mid + 1;
+            else hi = mid;
+        }
+
+        var taken = new List<Family>();
+        for (var i = lo; i < families.Count && string.CompareOrdinal(families[i].Top.FirstLsn, last) <= 0; i++)
+            if (!families[i].Taken) taken.Add(families[i]);
+        return taken;
+    }
 
     private static void Take(List<Family> families)
     {
