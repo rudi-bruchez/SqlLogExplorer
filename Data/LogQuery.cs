@@ -138,7 +138,7 @@ public sealed class LogQuery
         await using (var cmd = _connection.CreateCommand())
         {
             cmd.CommandText =
-                "SELECT TransactionId, AllocUnitId, MAX(AllocUnitName), SUM(COALESCE(LogRecordLength, 0)) " +
+                "SELECT TransactionId, AllocUnitId, COALESCE(MAX(CASE WHEN AllocUnitName NOT IN ('', 'Unknown Alloc Unit') THEN AllocUnitName END), MAX(AllocUnitName)), SUM(COALESCE(LogRecordLength, 0)) " +
                 "FROM LogRecords WHERE TransactionId IS NOT NULL AND TransactionId <> '0000:00000000' AND AllocUnitId IS NOT NULL " +
                 "GROUP BY TransactionId, AllocUnitId;";
             await using var r = await cmd.ExecuteReaderAsync(ct);
@@ -169,7 +169,7 @@ public sealed class LogQuery
             {
                 var id = r.GetString(0);
                 IReadOnlyList<UnitBytes> own = units.TryGetValue(id, out var list)
-                    ? list.OrderByDescending(u => u.Bytes).ToList()
+                    ? list.OrderByDescending(u => u.Bytes).ThenBy(u => u.AllocUnitId).ToList()
                     : new List<UnitBytes>();
                 facts.Add(new TransactionFacts(id,
                     r.IsDBNull(1) ? null : r.GetString(1),

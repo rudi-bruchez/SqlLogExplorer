@@ -267,4 +267,17 @@ public class LogQueryTests
         Assert.Equal((1L, 40L), await query.SumOutsideTransactionsAsync("00000001:00000010:0001", "00000001:00000014:0001"));
         Assert.Equal((2L, 60L), await query.SumOutsideTransactionsAsync("00000001:00000010:0001", "00000001:00000015:0001"));
     }
+
+    [Fact]
+    public async Task GetTransactionFactsAsync_RealUnitNameBeatsUnknownAllocUnit()
+    {
+        await using var cache = await LogCache.CreateAsync(Path.Combine(Path.GetTempPath(), $"sqllogexp_{Guid.NewGuid():N}.db"));
+        await cache.InsertBatchAsync(new List<LogRecord>
+        {
+            new("00000001:00000020:0001", "LOP_FORMAT_PAGE", "LCX_HEAP", "0000:00000020", "Unknown Alloc Unit", null, null) { AllocUnitId = 5, LogRecordLength = 10 },
+            new("00000001:00000021:0001", "LOP_FORMAT_PAGE", "LCX_HEAP", "0000:00000020", "Sales.T.IX", null, null) { AllocUnitId = 5, LogRecordLength = 10 },
+        });
+        var facts = await new LogQuery(cache.Connection).GetTransactionFactsAsync();
+        Assert.Equal("Sales.T.IX", facts[0].Units[0].AllocUnitName);
+    }
 }
