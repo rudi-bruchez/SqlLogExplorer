@@ -58,14 +58,21 @@ public class IndexMaintenanceIntegrationTests(ITestOutputHelper output)
         return list;
     }
 
-    /// <summary>Référence : octets des transactions dont le LOP_BEGIN_XACT a la session, plus les enregistrements hors transaction,
-    /// entre les deux LSN. Bornes en comparaison de texte, jamais fn_dblog(@before, @after) (Msg 9005, spec03 §2).</summary>
+    /// <summary>Référence : octets des transactions dont le LOP_BEGIN_XACT a la session, entre les deux LSN, plus les enregistrements
+    /// hors transaction compris entre le premier et le dernier LSN de ces transactions. Bornes en comparaison de texte, jamais
+    /// fn_dblog(@before, @after) (Msg 9005, spec03 §2).</summary>
     private static async Task<long> ReferenceAsync(SqlConnection cn, string before, string after, int spid)
         => Convert.ToInt64(await ScalarAsync(cn, """
-            SELECT [Transaction ID] AS tid, [Operation] AS op, [SPID] AS spid, [Log Record Length] AS len
+            SELECT [Current LSN] AS lsn, [Transaction ID] AS tid, [Operation] AS op, [SPID] AS spid, [Log Record Length] AS len
             INTO #w FROM sys.fn_dblog(NULL, NULL) WHERE [Current LSN] > @before AND [Current LSN] <= @after;
-            SELECT COALESCE(SUM(CAST(len AS bigint)), 0) FROM #w
-            WHERE tid = '0000:00000000' OR tid IN (SELECT tid FROM #w WHERE op = 'LOP_BEGIN_XACT' AND spid = @spid);
+            SELECT * INTO #s FROM #w WHERE tid IN (SELECT tid FROM #w WHERE op = 'LOP_BEGIN_XACT' AND spid = @spid);
+            -- Hors transaction : seulement dans l'étendue des transactions de la session. Le nettoyage des enregistrements
+            -- fantômes laissés par le DML d'une autre session (LOP_EXPUNGE_ROWS) tombe dans la fenêtre avant l'instruction ;
+            -- il appartient à ce DML, et spec04 §4 ne le donne à aucune opération.
+            SELECT COALESCE((SELECT SUM(CAST(len AS bigint)) FROM #s), 0)
+                 + COALESCE((SELECT SUM(CAST(len AS bigint)) FROM #w WHERE tid = '0000:00000000'
+                             AND lsn >= (SELECT MIN(lsn) FROM #s) AND lsn <= (SELECT MAX(lsn) FROM #s)), 0);
+            DROP TABLE #s;
             DROP TABLE #w;
             """, ("@before", before), ("@after", after), ("@spid", spid)), CultureInfo.InvariantCulture);
 
@@ -139,8 +146,9 @@ public class IndexMaintenanceIntegrationTests(ITestOutputHelper output)
                 case "S1" or "S2" when !firsts.SetEquals(units):
                     failures.Add($"{import} {s.Name}: first objects [{string.Join(", ", firsts)}] differ from [{string.Join(", ", units)}]");
                     break;
-                case "S5" when !firsts.IsSubsetOf(units):
-                    failures.Add($"{import} {s.Name}: first objects [{string.Join(", ", firsts)}] not in [{string.Join(", ", units)}]");
+                // Une opération sans objet ne doit pas passer le contrôle d'inclusion à vide.
+                case "S5" when ops.Any(o => o.Objects.Count == 0) || !firsts.IsSubsetOf(units):
+                    failures.Add($"{import} {s.Name}: first objects [{string.Join(", ", firsts)}] of {ops.Count} operation(s) not all in [{string.Join(", ", units)}]");
                     break;
                 case "S4" when ops.Count == 1 && !units.IsSubsetOf(ops[0].Objects.Select(o => o.AllocUnitId)):
                     failures.Add($"{import} {s.Name}: objects [{string.Join(", ", ops[0].Objects.Select(o => o.AllocUnitId))}] lack one of [{string.Join(", ", units)}]");
@@ -232,7 +240,7 @@ public class IndexMaintenanceIntegrationTests(ITestOutputHelper output)
             await RunAsync("S3", "ALTER INDEX IX_n ON dbo.T SET (ALLOW_PAGE_LOCKS = ON);", () => UnitsAsync(cn, "dbo.T", "IX_n"));
             await RunAsync("S4", "ALTER INDEX ALL ON dbo.T REBUILD;", () => UnitsAsync(cn, "dbo.T"));
 
-            // S5 : une seconde connexion met à jour dbo.A en boucle tant que la reconstruction en ligne tourne.
+            // S5 : une seconde connexion met à jour dbo.T (donc IX_n) en boucle tant que la reconstruction en ligne tourne.
             var stop = new CancellationTokenSource();
             var started = new TaskCompletionSource();
             var otherSpid = 0;
@@ -244,21 +252,37 @@ public class IndexMaintenanceIntegrationTests(ITestOutputHelper output)
                 otherSpid = Convert.ToInt32(await ScalarAsync(other, "SELECT @@SPID;"), CultureInfo.InvariantCulture);
                 while (!stop.IsCancellationRequested)
                 {
-                    await ScalarAsync(other, "UPDATE TOP (50) dbo.A SET n = n + 1;");
+                    await ScalarAsync(other, "UPDATE TOP (50) dbo.T SET n = n + 1;");
                     updates++;
                     started.TrySetResult();
                 }
             });
-            await Task.WhenAny(started.Task, updater);
-            await RunAsync("S5", "ALTER INDEX IX_n ON dbo.T REBUILD WITH (ONLINE = ON);", () => UnitsAsync(cn, "dbo.T", "IX_n"),
-                async () =>
-                {
-                    stop.Cancel();
-                    await updater;
-                });
-            output.WriteLine($"session {spid}, second connection {otherSpid}, {updates} updates");
+            try
+            {
+                await Task.WhenAny(started.Task, updater);
+                await RunAsync("S5", "ALTER INDEX IX_n ON dbo.T REBUILD WITH (ONLINE = ON);", () => UnitsAsync(cn, "dbo.T", "IX_n"),
+                    async () =>
+                    {
+                        stop.Cancel();
+                        await updater;
+                    });
+            }
+            finally
+            {
+                stop.Cancel();
+                // Observée ici aussi quand S5 échoue : l'erreur de la boucle est imprimée sans masquer celle du test.
+                try { await updater; }
+                catch (Exception e) { output.WriteLine($"updater: {e.Message}"); }
+            }
+            var s5 = statements[^1];
+            var interleaved = Convert.ToInt32(await ScalarAsync(cn, """
+                SELECT COUNT(*) FROM sys.fn_dblog(NULL, NULL)
+                WHERE [Current LSN] > @before AND [Current LSN] <= @after AND [Operation] = 'LOP_BEGIN_XACT' AND [SPID] = @other;
+                """, ("@before", s5.Before), ("@after", s5.After), ("@other", otherSpid)), CultureInfo.InvariantCulture);
+            output.WriteLine($"session {spid}, second connection {otherSpid}, {updates} updates, {interleaved} of its transactions begin in S5");
             Assert.NotEqual(spid, otherSpid);
             Assert.True(updates > 0);
+            Assert.True(interleaved > 0, "No transaction of the second connection begins inside S5's window.");
 
             for (var i = 0; i < statements.Count; i++)
                 statements[i] = statements[i] with { Reference = await ReferenceAsync(cn, statements[i].Before, statements[i].After, spid) };
@@ -272,7 +296,8 @@ public class IndexMaintenanceIntegrationTests(ITestOutputHelper output)
         }
         finally
         {
-            await ExecAsync(master!, $"ALTER DATABASE [{db}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE [{db}];");
+            try { await ExecAsync(master!, $"ALTER DATABASE [{db}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE [{db}];"); }
+            catch (SqlException e) { output.WriteLine($"cleanup {db}: {e.Message}"); }
             foreach (var path in new[] { bak, trn })
             {
                 try { await ExecAsync(master!, $"EXEC master.sys.xp_delete_file 0, N'{path}';"); }
