@@ -143,18 +143,18 @@ A summary line above the grid gives the total log record bytes imported, then th
 ### Columns
 
 - `Kind`: `Rebuild offline`, `Rebuild online` or `Reorganize`.
-- `Objects`: the allocation units that hold at least 1 % of the operation's bytes, by name, then `and n others`. The `LOB_DATA` and `IN_ROW_DATA` units of one index are one object. An offline import has no names, so the objects are shown by allocation unit id.
+- `Objects`: the allocation units that hold at least 1 % of the operation's bytes, by name, then `and n others`. The `LOB_DATA` and `IN_ROW_DATA` units of one index are one object. A backup import (see [Offline import of log backups](#offline-import-of-log-backups)) has no names, so the objects are shown by allocation unit id.
 - `Begin` and `End`: the times of the first and last transaction of the operation.
 - `Transactions` and `Records`: how many transactions and log records the operation includes.
 - `Log bytes`: the sum of the log record lengths, shown in KB, MB or GB and sorted on the number.
-- `Share`: the part of the imported log's record bytes that the operation wrote, as a percentage.
-- `Notes`: `may extend beyond the import` (a reorganize at the edge of the import, which may have started earlier or continued later), `not committed in the import` (an operation with no commit in the import), and `in a user transaction` (the statement ran inside a transaction of the user's own). An operation marked `in a user transaction` counts every top-level transaction of that session within the span of the user transaction, so it may include other work of that transaction.
+- `Share of imported log`: the part of the imported log's record bytes that the operation wrote, as a percentage.
+- `Notes`: `may extend beyond the import` (a reorganize at the edge of the import, which may have started earlier or continued later), `not committed in the import` (a rebuild, or a user transaction, with no commit in the import: the operation was still running when the import ended, and its bytes run to the end of the import, every later top-level transaction of its session included), and `in a user transaction` (the statement ran inside a transaction of the user's own). An operation marked `in a user transaction` counts every top-level transaction of that session within the span of the user transaction, so it may include other work of that transaction.
 
 The lines are sorted by log bytes, largest first, and each column can be sorted again.
 
 ### Reading the share for a customer
 
-`Share` is the part of the imported log record bytes that the operation wrote. Hypothetically, if the import covers one hour of log and a line shows 40 %, that operation wrote 40 % of the log record bytes of that hour. Compare the share with the time the operation took (`Begin` to `End`) and with the log backup schedule. The unit is the log record, not the file: see the first limit below.
+`Share of imported log` is the part of the imported log record bytes that the operation wrote. Hypothetically, if the import covers one hour of log and a line shows 40 %, that operation wrote 40 % of the log record bytes of that hour. Compare the share with the time the operation took (`Begin` to `End`) and with the log backup schedule. The unit is the log record, not the file: see the first limit below.
 
 ### Accuracy of the figures
 
@@ -165,10 +165,11 @@ In the integration scenario (`tests/SqlLogExplorer.Tests/Integration/IndexMainte
 - The bytes are those of the log records. The log actually written is 3 to 16 % larger (about 6 % for an offline rebuild, 3 % for an online rebuild, 16 % for a reorganize), because of log block headers and padding. No per-operation figure of the physical log is defined, since other sessions write into the same log blocks.
 - `Log Reserve`, the space reserved for a rollback, and the size or growth of the `.ldf` file are not shown.
 - Consecutive reorganizes of one index appear as one line.
+- When an index's reorganize writes only a LOB phase (its in-row pages were not fragmented), the next index's reorganize can merge into the same line (the objects and the total stay right).
 - A rebuild that started before the import is not listed.
 - These are not recognized: plain `CREATE INDEX`, `ALTER TABLE ... REBUILD`, `CREATE INDEX ... WITH (DROP_EXISTING = ON)`, `DBCC DBREINDEX`, `DBCC INDEXDEFRAG`, resumable rebuilds and columnstore indexes.
 - The release of the old tree after a rebuild (`DeferredAllocUnitDrop::Process`) runs on a background session after the commit and is not attributed to the operation (0.34 % of an offline rebuild of 79 MB on SQL Server 2022).
-- In an offline import, objects are shown by allocation unit id, because the log backup has no names.
+- In a backup import, objects are shown by allocation unit id, because the log backup has no names.
 
 ## Inspector
 

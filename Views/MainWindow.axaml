@@ -195,7 +195,7 @@
                             <DataGridTextColumn Header="Transactions" Binding="{Binding Transactions}" Width="110"/>
                             <DataGridTextColumn Header="Records" Binding="{Binding Records}" Width="100"/>
                             <DataGridTextColumn Header="Log bytes" Binding="{Binding BytesText}" SortMemberPath="Bytes" Width="100"/>
-                            <DataGridTextColumn Header="Share" Binding="{Binding ShareText}" SortMemberPath="Share" Width="80"/>
+                            <DataGridTextColumn Header="Share of imported log" Binding="{Binding ShareText}" SortMemberPath="Share" Width="160"/>
                             <DataGridTextColumn Header="Notes" Binding="{Binding Notes}" Width="260"/>
                         </DataGrid.Columns>
                     </DataGrid>
