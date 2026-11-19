@@ -13,7 +13,7 @@ The top of the window holds the import buttons:
 
 Below the buttons, a status line reports what is happening: `Select a .trn file or enter a Live DB connection.` at start, `Analyzing…` with a progress bar during an import, then `<n> records imported.`, `Analysis cancelled.` or `Failed: <message>`.
 
-The rest of the window is three tabs: `Records`, `By operation type` and `By object`.
+The rest of the window is four tabs: `Records`, `By operation type`, `By object` and `Index maintenance`.
 
 One import is held at a time. Starting a new import, or closing the window, discards the previous one. The records are kept in a temporary SQLite file (`sqllogexp_<guid>.db` in the system temporary folder), deleted at that moment. A cancelled or failed import is discarded too.
 
@@ -131,6 +131,44 @@ A page search follows the `Page ID` column only. Records that concern a page wit
 `By object` counts them per `AllocUnitName`, most frequent first (columns `Object (AllocUnitName)` and `Count`). Records without an allocation unit name are left out, and an offline import has none (see above).
 
 Both are computed once, at the end of an import.
+
+## Index maintenance tab
+
+The `Index maintenance` tab answers one question: how much of the imported log did index rebuilds and reorganizes write? It is computed once, at the end of an import, on the whole import (the records filter does not apply), like the other statistics tabs.
+
+One line is one rebuild statement, or, for a reorganize, one index. A rebuild statement (`ALTER INDEX ... REBUILD`, `CREATE INDEX`) is recognized by the transactions it opens, offline or online. A reorganize (`ALTER INDEX ... REORGANIZE`) is recognized by its page operations and listed per index. Consecutive reorganizes of the same index are merged into one line.
+
+A summary line above the grid gives the total log record bytes imported, then the bytes and the share of all the operations found, each counted once.
+
+### Columns
+
+- `Kind`: `Rebuild offline`, `Rebuild online` or `Reorganize`.
+- `Objects`: the allocation units that hold at least 1 % of the operation's bytes, by name, then `and n others`. The `LOB_DATA` and `IN_ROW_DATA` units of one index are one object. An offline import has no names, so the objects are shown by allocation unit id.
+- `Begin` and `End`: the times of the first and last transaction of the operation.
+- `Transactions` and `Records`: how many transactions and log records the operation includes.
+- `Log bytes`: the sum of the log record lengths, shown in KB, MB or GB and sorted on the number.
+- `Share`: the part of the imported log's record bytes that the operation wrote, as a percentage.
+- `Notes`: `may extend beyond the import` (a reorganize at the edge of the import, which may have started earlier or continued later), `not committed in the import` (a rebuild with no commit in the import), and `in a user transaction` (the statement ran inside a transaction of the user's own).
+
+The lines are sorted by log bytes, largest first, and each column can be sorted again.
+
+### Reading the share for a customer
+
+`Share` answers the question of how much of the log a maintenance window generated. A reorganize at 40 % of an hour of log tells the customer that the log backups of that hour are mostly maintenance. Compare the share with the time the operation took (`Begin` to `End`) and with the log backup schedule. The unit is the log record, not the file: see the first limit below.
+
+### Measured accuracy
+
+On SQL Server 2017 to 2025, the operations of a statement matched the log record bytes written by its session to within 0.1 %. Records written outside any transaction (page allocation work, for instance) are counted with an operation only inside its span. Ghost record cleanup caused by other sessions' DML before the first transaction of a rebuild is therefore not attributed to it.
+
+### Limits
+
+- The bytes are those of the log records. The log actually written is 3 to 16 % larger (about 6 % for an offline rebuild, 3 % for an online rebuild, 16 % for a reorganize), because of log block headers and padding. No per-operation figure of the physical log is defined, since other sessions write into the same log blocks.
+- `Log Reserve`, the space reserved for a rollback, and the size or growth of the `.ldf` file are not shown.
+- Consecutive reorganizes of one index appear as one line.
+- A rebuild that started before the import is not listed.
+- These are not recognized: `ALTER TABLE ... REBUILD`, `CREATE INDEX ... WITH (DROP_EXISTING = ON)`, `DBCC DBREINDEX`, `DBCC INDEXDEFRAG`, resumable rebuilds and columnstore indexes.
+- The release of the old tree after a rebuild (`DeferredAllocUnitDrop::Process`) runs on a background session after the commit and is not attributed to the operation (0.34 % of an offline rebuild of 79 MB on SQL Server 2022).
+- In an offline import, objects are shown by allocation unit id, because the log backup has no names.
 
 ## Inspector
 

@@ -4,6 +4,21 @@ All notable changes to this project are documented in this file. The format foll
 
 ## [Unreleased]
 
+### Added
+
+- An `Index maintenance` tab listing the index rebuilds (offline and online) and reorganizes found in the imported log, with the log record bytes, records, transactions and share of the imported log of each, and a summary line for the whole import.
+- The import now reads `Log Record Length`, `SPID` and `Parent Transaction ID` from `fn_dblog` and `fn_dump_dblog`.
+
+### Limits
+
+- The bytes are those of the log records; the log written is 3 to 16 % larger.
+- `Log Reserve` and the size of the `.ldf` file are not shown.
+- Consecutive reorganizes of one index appear as one line.
+- A rebuild that started before the import is not listed.
+- `ALTER TABLE ... REBUILD`, `DROP_EXISTING`, `DBCC DBREINDEX`, `DBCC INDEXDEFRAG`, resumable rebuilds and columnstore indexes are not recognized.
+- The release of the old tree after a rebuild (`DeferredAllocUnitDrop::Process`) is not attributed to it.
+- In an offline import, objects are shown by allocation unit id.
+
 ## [0.2.0] - 2026-10-16
 
 Following the log by transaction, by table and by page. The `Records` tab now lists the transactions of the imported log with their begin and end times and outcome, and shows the operations of the one you select. A search by object or by page restricts both the list and the grid, to answer what happened to a table or to a page.
