@@ -211,4 +211,60 @@ public class LogQueryTests
     [InlineData("1:-5", null)]
     public void NormalizePageId_AcceptsDbccAndFnDblogForms(string input, string? expected)
         => Assert.Equal(expected, LogFilter.NormalizePageId(input));
+
+    private static async Task<LogCache> SeedMaintenanceAsync()
+    {
+        var cache = await LogCache.CreateAsync(Path.Combine(Path.GetTempPath(), $"sqllogexp_{Guid.NewGuid():N}.db"));
+        await cache.InsertBatchAsync(new List<LogRecord>
+        {
+            new("00000001:00000010:0001", "LOP_BEGIN_XACT", "LCX_NULL", "0000:00000010", null, null, null)
+                { TransactionName = "ALTER INDEX", Spid = 60, LogRecordLength = 100, BeginTime = "2026/11/19 10:00:00:000" },
+            new("00000001:00000011:0001", "LOP_BEGIN_XACT", "LCX_NULL", "0000:00000011", null, null, null)
+                { ParentTransactionId = "0000:00000010", LogRecordLength = 50, AllocUnitId = 9, AllocUnitName = "" },
+            new("00000001:00000012:0001", "LOP_FORMAT_PAGE", "LCX_HEAP", "0000:00000010", "dbo.T.IX_n", null, null)
+                { AllocUnitId = 7, LogRecordLength = 300 },
+            new("00000001:00000013:0001", "LOP_INSERT_ROWS", "LCX_HEAP", "0000:00000000", null, null, null) { LogRecordLength = 40 },
+            new("00000001:00000014:0001", "LOP_COMMIT_XACT", "LCX_NULL", "0000:00000010", null, null, null)
+                { LogRecordLength = 60, EndTime = "2026/11/19 10:00:01:000" },
+            new("00000001:00000015:0001", "LOP_INSERT_ROWS", "LCX_HEAP", "0000:00000000", null, null, null) { LogRecordLength = 20 },
+        });
+        return cache;
+    }
+
+    [Fact]
+    public async Task GetTransactionFactsAsync_OneFactPerTransaction()
+    {
+        await using var cache = await SeedMaintenanceAsync();
+        var facts = await new LogQuery(cache.Connection).GetTransactionFactsAsync();
+
+        Assert.Equal(2, facts.Count);
+        Assert.Equal("ALTER INDEX", facts[0].Name);
+        Assert.Equal(60, facts[0].Spid);
+        Assert.True(facts[0].HasBegin);
+        Assert.True(facts[0].HasEnd);
+        Assert.Equal(460, facts[0].Bytes);
+        Assert.Equal(new UnitBytes(7, "dbo.T.IX_n", 300), facts[0].Units[0]);
+        Assert.Equal("0000:00000010", facts[1].ParentTransactionId);
+        Assert.False(facts[1].HasEnd);
+    }
+
+    [Fact]
+    public async Task GetTotalLogBytesAsync_SumsEveryRecord()
+    {
+        await using var cache = await SeedMaintenanceAsync();
+        Assert.Equal(570, await new LogQuery(cache.Connection).GetTotalLogBytesAsync());
+
+        await using var empty = await LogCache.CreateAsync(Path.Combine(Path.GetTempPath(), $"sqllogexp_{Guid.NewGuid():N}.db"));
+        Assert.Equal(0, await new LogQuery(empty.Connection).GetTotalLogBytesAsync());
+    }
+
+    [Fact]
+    public async Task SumOutsideTransactionsAsync_BoundsIncluded()
+    {
+        await using var cache = await SeedMaintenanceAsync();
+        var query = new LogQuery(cache.Connection);
+
+        Assert.Equal((1L, 40L), await query.SumOutsideTransactionsAsync("00000001:00000010:0001", "00000001:00000014:0001"));
+        Assert.Equal((2L, 60L), await query.SumOutsideTransactionsAsync("00000001:00000010:0001", "00000001:00000015:0001"));
+    }
 }

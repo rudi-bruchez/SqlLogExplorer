@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
@@ -125,6 +126,86 @@ public sealed class LogQuery
                 r.IsDBNull(2) ? null : r.GetString(2), r.IsDBNull(3) ? null : r.GetString(3), outcome, r.GetInt64(6)));
         }
         return list;
+    }
+
+    /// <summary>Les faits de chaque transaction du cache (hors 0000:00000000), dans l'ordre de leur premier LSN : deux requêtes
+    /// (par transaction, puis par transaction et unité d'allocation) jointes en mémoire (spec04).</summary>
+    public async Task<IReadOnlyList<TransactionFacts>> GetTransactionFactsAsync(CancellationToken ct = default)
+    {
+        using var gate = await ConnectionGate.EnterAsync(_connection, ct);
+
+        var units = new Dictionary<string, List<UnitBytes>>();
+        await using (var cmd = _connection.CreateCommand())
+        {
+            cmd.CommandText =
+                "SELECT TransactionId, AllocUnitId, MAX(AllocUnitName), SUM(COALESCE(LogRecordLength, 0)) " +
+                "FROM LogRecords WHERE TransactionId IS NOT NULL AND TransactionId <> '0000:00000000' AND AllocUnitId IS NOT NULL " +
+                "GROUP BY TransactionId, AllocUnitId;";
+            await using var r = await cmd.ExecuteReaderAsync(ct);
+            while (await r.ReadAsync(ct))
+            {
+                var id = r.GetString(0);
+                if (!units.TryGetValue(id, out var list))
+                    units[id] = list = new List<UnitBytes>();
+                list.Add(new UnitBytes(r.GetInt64(1), r.IsDBNull(2) ? null : r.GetString(2), r.GetInt64(3)));
+            }
+        }
+
+        var facts = new List<TransactionFacts>();
+        await using (var cmd = _connection.CreateCommand())
+        {
+            cmd.CommandText =
+                "SELECT TransactionId, " +
+                "MAX(CASE WHEN Operation = 'LOP_BEGIN_XACT' THEN TransactionName END), " +
+                "MAX(CASE WHEN Operation = 'LOP_BEGIN_XACT' THEN Spid END), " +
+                "MAX(CASE WHEN Operation = 'LOP_BEGIN_XACT' THEN ParentTransactionId END), " +
+                "MIN(LSN), MAX(LSN), MAX(BeginTime), MAX(EndTime), " +
+                "MAX(Operation = 'LOP_BEGIN_XACT'), MAX(Operation IN ('LOP_COMMIT_XACT', 'LOP_ABORT_XACT')), " +
+                "COUNT(*), SUM(COALESCE(LogRecordLength, 0)) " +
+                "FROM LogRecords WHERE TransactionId IS NOT NULL AND TransactionId <> '0000:00000000' " +
+                "GROUP BY TransactionId ORDER BY MIN(LSN);";
+            await using var r = await cmd.ExecuteReaderAsync(ct);
+            while (await r.ReadAsync(ct))
+            {
+                var id = r.GetString(0);
+                IReadOnlyList<UnitBytes> own = units.TryGetValue(id, out var list)
+                    ? list.OrderByDescending(u => u.Bytes).ToList()
+                    : new List<UnitBytes>();
+                facts.Add(new TransactionFacts(id,
+                    r.IsDBNull(1) ? null : r.GetString(1),
+                    r.IsDBNull(2) ? null : r.GetInt32(2),
+                    r.IsDBNull(3) ? null : r.GetString(3),
+                    r.GetString(4), r.GetString(5),
+                    r.IsDBNull(6) ? null : r.GetString(6),
+                    r.IsDBNull(7) ? null : r.GetString(7),
+                    r.GetBoolean(8), r.GetBoolean(9), r.GetInt64(10), r.GetInt64(11), own));
+            }
+        }
+        return facts;
+    }
+
+    /// <summary>Octets de journal de tout le cache ; 0 pour un cache vide (spec04).</summary>
+    public async Task<long> GetTotalLogBytesAsync(CancellationToken ct = default)
+    {
+        using var gate = await ConnectionGate.EnterAsync(_connection, ct);
+        await using var cmd = _connection.CreateCommand();
+        cmd.CommandText = "SELECT COALESCE(SUM(COALESCE(LogRecordLength, 0)), 0) FROM LogRecords;";
+        return Convert.ToInt64(await cmd.ExecuteScalarAsync(ct));
+    }
+
+    /// <summary>Enregistrements hors transaction (0000:00000000) entre deux LSN, bornes comprises (spec04).</summary>
+    public async Task<(long Records, long Bytes)> SumOutsideTransactionsAsync(string fromLsn, string toLsn, CancellationToken ct = default)
+    {
+        using var gate = await ConnectionGate.EnterAsync(_connection, ct);
+        await using var cmd = _connection.CreateCommand();
+        cmd.CommandText =
+            "SELECT COUNT(*), COALESCE(SUM(COALESCE(LogRecordLength, 0)), 0) FROM LogRecords " +
+            "WHERE TransactionId = '0000:00000000' AND LSN BETWEEN $from AND $to;";
+        cmd.Parameters.AddWithValue("$from", fromLsn);
+        cmd.Parameters.AddWithValue("$to", toLsn);
+        await using var r = await cmd.ExecuteReaderAsync(ct);
+        await r.ReadAsync(ct);
+        return (r.GetInt64(0), r.GetInt64(1));
     }
 
     /// <summary>Le plus grand LSN du cache, d'où l'ancre 3 reprend la lecture du journal (spec03 §7.2) ; null pour un cache vide.</summary>
